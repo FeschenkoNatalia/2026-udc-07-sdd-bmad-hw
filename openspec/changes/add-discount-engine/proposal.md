@@ -17,9 +17,11 @@ traceable rather than re-decided in code.
 
 ## What Changes
 
-- New pure function `priceOrder(order, catalogue, options?)` returning a
+- New function `priceOrder(order, catalogue, options?)` returning a
   `PriceBreakdown` (subtotal, tier discount, coupon discount, shipping,
-  minimum-charge adjustment, total, applied and rejected coupons).
+  minimum-charge adjustment, total, applied and rejected coupons). Pure given
+  `options.now`: no I/O, no mutation of its arguments, and the wall clock is
+  read only when `now` is omitted.
 - Tier percentage is applied to goods only, per category, with half-up integer
   rounding — never to shipping.
 - Coupons cascade after the tier, in the order the customer typed them; a

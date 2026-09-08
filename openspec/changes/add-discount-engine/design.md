@@ -20,8 +20,11 @@ The behaviour itself is already decided in `docs/spec/pricing-discounts.md`
 
 **Goals:**
 
-- One deterministic procedure: the same cart and codes always produce the same
-  breakdown, independent of implementation order or cart line splitting.
+- One deterministic procedure: the same cart, codes and `options.now` always
+  produce the same breakdown, independent of implementation order or cart line
+  splitting. The clock is the single exception, and only when it is not
+  injected: `options.now` defaults to `new Date()`, so two otherwise identical
+  calls that omit it can straddle a coupon's expiry and differ.
 - A breakdown that reconciles exactly, so finance can rebuild the total from its
   parts and support can explain any single kopeck.
 - Total integer arithmetic, including the rounding rule.
