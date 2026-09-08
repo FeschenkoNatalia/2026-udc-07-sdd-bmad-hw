@@ -95,9 +95,15 @@ reason describes the cart rather than the state of the engine.
 ### Requirement: Coupon eligibility is decided without throwing
 
 The engine SHALL NOT throw on coupon data, nor on an individual malformed order
-line. Exactly two inputs raise instead of pricing: an invalid `now`, which is a
-caller error rather than customer data, and a goods subtotal above
-`MAX_MONEY_KOPECKS`, which cannot be priced exactly. Every code entered MUST
+line. The guarantee covers the *elements* of the three externally-shaped
+collections — `order.items`, `catalogue` and `order.coupons` — whatever their
+runtime type. It does NOT cover the collections themselves: a non-array there is
+a violation of the call contract, not customer data, and MUST fail loudly for the
+same reason an invalid `now` does — pricing a structurally invalid call would
+turn `items: undefined` into a silent empty cart that passes on down the
+checkout. Beyond that, exactly two inputs raise instead of pricing: an invalid
+`now`, which is a caller error rather than customer data, and a goods subtotal
+above `MAX_MONEY_KOPECKS`, which cannot be priced exactly. Every code entered MUST
 appear exactly once in either `appliedCoupons` or `rejectedCoupons`, both ordered
 as typed. A code absent from the catalogue MUST be reported as `unknown_code` on
 every occurrence; `duplicate_code` applies only after the code has been found in
@@ -110,10 +116,12 @@ from outside the engine, so a candidate that is not an object carrying a string
 empty code — it can name nothing in the catalogue, and stringifying it would show
 the customer a code they never typed. A coupon is invalid at
 and after its `expiresAt` instant, compared against an injectable `now`;
-`expiresAt` MUST be an ISO-8601 date-time carrying an explicit offset (`Z` or
-`±HH:MM`), and anything else — including a date without a time — MUST be
-rejected as `invalid_coupon`, so the outcome cannot depend on the host time
-zone. Every money-valued coupon field — a fixed `value` and a
+`expiresAt` MUST be a string, and MUST be an ISO-8601 date-time carrying an
+explicit offset (`Z` or `±HH:MM`); anything else — including a date without a
+time — MUST be rejected as `invalid_coupon`, so the outcome cannot depend on the
+host time zone. The string check MUST precede the pattern match rather than rely
+on it: matching converts its argument with `ToString`, which throws on a symbol
+instead of failing to match, and an unusable coupon must never abort a price. Every money-valued coupon field — a fixed `value` and a
 `minSubtotalKopecks` when present — MUST be a non-negative integer no greater
 than `MAX_MONEY_KOPECKS`, or the coupon is `invalid_coupon`. The two union-typed
 fields are validated as data as well: `kind` MUST be exactly `percent` or
@@ -265,11 +273,13 @@ order with no items MUST remain at a total of zero.
 ### Requirement: Malformed order lines are neutralised
 
 The engine SHALL NOT reject an order line by line. A line that is not an object,
-a line whose `lineTotalKopecks` is not a non-negative integer, or one whose
-`category` falls outside the declared union, MUST contribute 0 to the discount
-base, so that no category remainder can start below zero and the reported
+a line whose `unitPriceKopecks` or `quantity` is not a number, a line whose
+`lineTotalKopecks` is not a non-negative integer, or one whose `category` falls
+outside the declared union, MUST contribute 0 to the discount base, so that no category remainder can start below zero and the reported
 subtotal always equals the sum of the category remainders. The shape check MUST
-precede reading the line, since `lineTotalKopecks` raises on a non-object, and it
+precede reading the line, since `lineTotalKopecks` raises on a non-object and
+multiplies the two amount fields — a symbol or bigint raises there rather than
+yielding the `NaN` the integer check would absorb — and it
 MUST also be applied before the shipping fee is computed, since
 `shippingKopecks` walks the same array to test its all-digital waiver. Shipping
 is therefore read from the shape-valid lines; lines carrying a bad amount or an
@@ -342,6 +352,11 @@ behaviour left untouched; `totalKopecks` may therefore reach
 - **THEN** the first entry is `unknown_code` under an empty code, `SAVE10` still
   applies for 10000, the total is 94900, and every entry is still accounted for
   exactly once
+- **WHEN** a coupon's `expiresAt` is a symbol, or a line's `unitPriceKopecks` or
+  `quantity` is a symbol or bigint — values that raise on primitive conversion
+  rather than converting badly
+- **THEN** the coupon is `invalid_coupon` and the line contributes 0 while
+  remaining in the cart for the shipping test, and no exception escapes
 
 ### Requirement: The breakdown reconciles exactly
 

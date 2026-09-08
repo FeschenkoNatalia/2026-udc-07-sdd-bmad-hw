@@ -81,6 +81,9 @@ const CATALOGUE: Coupon[] = [
   // гілку fixed і роздав би 50 000 копійок.
   coupon("KINDBAD", "percentt" as never, 50_000),
   coupon("CATBAD", "percent", 10, { category: "STANDARD" as never }),
+  // D-12: значення, яке не приводиться до рядка, — для AC-28. `RegExp.test`
+  // кидає на символі, а не повертає false.
+  coupon("SYMDATE", "percent", 10, { expiresAt: Symbol("bad") as never }),
 ];
 
 /**
@@ -534,6 +537,24 @@ describe("priceOrder", () => {
     expect(result.appliedCoupons).toEqual([{ code: "SAVE10", discountKopecks: 10_000 }]);
     expect(result.rejectedCoupons).toEqual([{ code: "NOSUCH", reason: "unknown_code" }]);
     expect(result.totalKopecks).toBe(94_900);
+
+    // Поля, які не приводяться до примітива: `RegExp.test` і множення кидають
+    // на символі, а не дають `false`/`NaN`. Обидва — дані ззовні, тож обидва
+    // мають давати відмову, а не зупиняти розрахунок (D-12, D-16, D-22).
+    const symbolDate = price(order({ coupons: ["SYMDATE"] }));
+    expect(symbolDate.rejectedCoupons).toEqual([{ code: "SYMDATE", reason: "invalid_coupon" }]);
+    expect(symbolDate.totalKopecks).toBe(104_900);
+
+    for (const bad of [
+      { unitPriceKopecks: Symbol("p") as never },
+      { quantity: Symbol("q") as never },
+      { unitPriceKopecks: 10n as never },
+    ]) {
+      const symbolLine = price(order({ items: [item(), item({ sku: "BB-1", ...bad })] }));
+      expect(symbolLine.subtotalKopecks).toBe(100_000); // зіпсутий рядок вносить 0
+      expect(symbolLine.shippingKopecks).toBe(4_900); // але з кошика не зникає
+      expect(symbolLine.totalKopecks).toBe(104_900);
+    }
 
     // Третій зовнішній вхід: код, який не є рядком. `normalizeCode` кинув би на
     // `.trim()`; замість цього — `unknown_code` з порожнім кодом, і сусідній

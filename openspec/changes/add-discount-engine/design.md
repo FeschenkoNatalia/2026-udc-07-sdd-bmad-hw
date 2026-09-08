@@ -134,6 +134,21 @@ would let one malformed row in a marketing feed, or one bad entry in a cart, tak
 down pricing for every order — the failure the no-throw rule exists to prevent,
 arriving one level up from the field it was written for.
 
+Two fields need their *type* checked rather than only their value, because they
+are handed to operations that convert before they compare. `RegExp.test` converts
+with `ToString` and `lineTotalKopecks` multiplies; both raise on a symbol instead
+of producing a non-matching string or a `NaN` that the following check would
+absorb. Every other field is compared with `===` or inspected with
+`Number.isInteger`, neither of which converts, so no guard is needed there.
+
+The guarding stops at the element. A `null` entry in a cart is customer data and
+must price; `order.items` not being an array at all is a broken call, and the
+engine fails on it exactly as it fails on a `now` that is not a `Date`. Drawing
+the line anywhere further out would mean inventing a total for a call that does
+not describe an order — and the most likely invention, treating a missing array
+as an empty one, is the worst of them: it prices as a valid empty cart and moves
+on through checkout rather than surfacing the bug.
+
 Neutralising a line at step 0 is not enough on its own, because the engine hands
 the same array to a seeded function later: `shippingKopecks` walks `order.items`
 to decide the all-digital waiver, and a non-object entry throws there. Shipping is

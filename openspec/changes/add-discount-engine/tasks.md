@@ -106,6 +106,12 @@ Added after the spec was frozen, from the Task E spec reviewer and the PR review
       `unknown_code` under an empty code, and mark a category present only where
       a line actually contributed, so a corrupt-only category reads
       `category_absent` (AC-28).
+- [ ] 8.9 Type-check the two fields that are handed to coercing operations
+      before they are used: `expiresAt` before the pattern match, and
+      `unitPriceKopecks`/`quantity` before `lineTotalKopecks` multiplies them.
+      A symbol or bigint raises on conversion instead of failing the check that
+      follows, which would abort the price rather than reject the coupon or
+      neutralise the line (AC-28).
 - [ ] 8.8 Compute the shipping fee from the shape-valid lines rather than the raw
       `order.items`: `shippingKopecks` walks the array itself, so a non-object
       entry throws there even after step 0 has neutralised it. Keep lines with a

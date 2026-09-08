@@ -108,8 +108,14 @@ function isUsable(coupon: Coupon): boolean {
   // and `subtotal < NaN` is false, which would make the threshold vanish (D-16).
   const thresholdOk =
     coupon.minSubtotalKopecks === undefined || isMoney(coupon.minSubtotalKopecks);
+  // The type check is not redundant with the regex: `RegExp.test` converts its
+  // argument with `ToString`, and that *throws* on a symbol instead of returning
+  // a non-matching string — so an unusable coupon would abort the whole price
+  // rather than land in `rejectedCoupons` (D-8, D-12, D-16).
   const dateOk =
-    ISO_WITH_OFFSET.test(coupon.expiresAt) && !Number.isNaN(Date.parse(coupon.expiresAt));
+    typeof coupon.expiresAt === "string" &&
+    ISO_WITH_OFFSET.test(coupon.expiresAt) &&
+    !Number.isNaN(Date.parse(coupon.expiresAt));
   return kindOk && categoryOk && valueOk && thresholdOk && dateOk;
 }
 
@@ -155,6 +161,10 @@ export function priceOrder(
   for (const line of order.items) {
     if (line === null || typeof line !== "object") continue;
     wellFormedLines.push(line);
+    // Same coercion trap as `expiresAt`, in the seeded helper: `lineTotalKopecks`
+    // multiplies the two fields, and a symbol or bigint throws on that
+    // multiplication rather than yielding `NaN` for the check below (D-22).
+    if (typeof line.unitPriceKopecks !== "number" || typeof line.quantity !== "number") continue;
     const lineTotal = lineTotalKopecks(line);
     if (Number.isInteger(lineTotal) && lineTotal >= 0 && CATEGORIES.includes(line.category)) {
       remaining[line.category] += lineTotal;
