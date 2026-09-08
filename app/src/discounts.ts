@@ -125,8 +125,10 @@ function noRemainders(): Remainders {
 
 /**
  * Prices an order: loyalty tier first, then every eligible coupon, cascading, in
- * the order the customer typed them. Pure — no I/O, no clock outside
- * `options.now`, and neither `order` nor `catalogue` is mutated. Coupon data never
+ * the order the customer typed them. Pure and deterministic for a fixed
+ * `options.now` — no I/O, and neither `order` nor `catalogue` is mutated. When
+ * `options.now` is omitted the current time is read deliberately, so two
+ * otherwise identical calls can straddle a coupon's expiry. Coupon data never
  * throws — an unusable coupon comes back in `rejectedCoupons`, a malformed
  * catalogue entry is skipped by the lookup, and a code that is not a string is
  * `unknown_code` — and neither does a single malformed order line, which simply
