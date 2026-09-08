@@ -134,6 +134,14 @@ would let one malformed row in a marketing feed, or one bad entry in a cart, tak
 down pricing for every order — the failure the no-throw rule exists to prevent,
 arriving one level up from the field it was written for.
 
+Neutralising a line at step 0 is not enough on its own, because the engine hands
+the same array to a seeded function later: `shippingKopecks` walks `order.items`
+to decide the all-digital waiver, and a non-object entry throws there. Shipping is
+therefore computed from the shape-valid lines. They are the right set rather than
+the contributing ones: a line with a corrupt amount still represents physical
+goods in the cart, so dropping it could waive the fee on a cart that is not
+all-digital — a pricing change D-2 explicitly does not make.
+
 **Rejection reasons are ordered.** Without a fixed precedence two correct
 implementations agree on the money and disagree on the reason, which makes any
 test asserting a reason flaky.

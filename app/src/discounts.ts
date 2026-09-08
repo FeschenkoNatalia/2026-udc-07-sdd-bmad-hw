@@ -151,8 +151,10 @@ export function priceOrder(
   // are no such goods — rather than `no_remaining_amount` (D-19, D-22).
   const remaining = noRemainders();
   const categoriesPresent = new Set<Category>();
+  const wellFormedLines: LineItem[] = [];
   for (const line of order.items) {
     if (line === null || typeof line !== "object") continue;
+    wellFormedLines.push(line);
     const lineTotal = lineTotalKopecks(line);
     if (Number.isInteger(lineTotal) && lineTotal >= 0 && CATEGORIES.includes(line.category)) {
       remaining[line.category] += lineTotal;
@@ -270,8 +272,16 @@ export function priceOrder(
 
   const couponDiscount = appliedCoupons.reduce((sum, entry) => sum + entry.discountKopecks, 0);
 
-  // Step 4 — shipping is never discounted (D-2).
-  const shipping = shippingKopecks(order);
+  // Step 4 — shipping is never discounted (D-2). It is read from the shape-valid
+  // lines rather than the raw array: `shippingKopecks` dereferences every entry
+  // to test the all-digital waiver, so a `null` line would throw here — after
+  // step 0 had already promised it would only contribute 0 (D-22). Lines with a
+  // bad amount or an unknown category stay in: dropping them could waive
+  // shipping on a cart that is not really all-digital, and D-2 leaves the
+  // seeded shipping rule alone.
+  const shipping = shippingKopecks(
+    wellFormedLines.length === order.items.length ? order : { ...order, items: wellFormedLines },
+  );
   let total = CATEGORIES.reduce((sum, category) => sum + remaining[category], 0) + shipping;
 
   // Step 5 — an order that holds items is never worth nothing (D-21). The top-up

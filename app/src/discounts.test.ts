@@ -3,7 +3,12 @@
 // видно просто у виводі vitest, без зазирання в таблицю простежуваності.
 
 import { describe, it, expect } from "vitest";
-import { priceOrder, MAX_MONEY_KOPECKS, MINIMUM_CHARGE_KOPECKS } from "./discounts.js";
+import {
+  priceOrder,
+  MAX_MONEY_KOPECKS,
+  MINIMUM_CHARGE_KOPECKS,
+  type PriceBreakdown,
+} from "./discounts.js";
 import { subtotalKopecks } from "./pricing.js";
 import type { Coupon, LineItem, Order } from "./types.js";
 
@@ -78,15 +83,57 @@ const CATALOGUE: Coupon[] = [
   coupon("CATBAD", "percent", 10, { category: "STANDARD" as never }),
 ];
 
-const price = (o: Order, now: Date = NOW) => priceOrder(o, CATALOGUE, { now });
+/**
+ * Інваріанти §3.1, перевірені на одному результаті. Живуть тут, а не в AC-20,
+ * щоб не залежати від спільного стану: кожен виклик `price()` доводить їх сам.
+ */
+const expectReconciles = (result: PriceBreakdown, o: Order): void => {
+  expect(result.totalKopecks).toBe(
+    result.subtotalKopecks -
+      result.tierDiscountKopecks -
+      result.couponDiscountKopecks +
+      result.shippingKopecks +
+      result.minimumChargeAdjustmentKopecks,
+  );
+
+  expect(result.couponDiscountKopecks).toBe(
+    result.appliedCoupons.reduce((sum, entry) => sum + entry.discountKopecks, 0),
+  );
+
+  // Кожен введений код зустрічається рівно один раз.
+  expect(result.appliedCoupons.length + result.rejectedCoupons.length).toBe(o.coupons.length);
+
+  // Інваріант 6 (D-24): база ніколи не виходить за межу.
+  expect(result.subtotalKopecks).toBeGreaterThanOrEqual(0);
+  expect(result.subtotalKopecks).toBeLessThanOrEqual(MAX_MONEY_KOPECKS);
+
+  expect(result.totalKopecks).toBeGreaterThanOrEqual(result.shippingKopecks);
+  if (result.subtotalKopecks > 0) {
+    expect(result.totalKopecks).toBeGreaterThanOrEqual(MINIMUM_CHARGE_KOPECKS);
+  }
+
+  // Інваріант 4: доплата — 0 або 1, і 1 лише тоді, коли без неї підсумок був би
+  // рівно 0, тобто коли весь підсумок і є ця копійка.
+  expect([0, MINIMUM_CHARGE_KOPECKS]).toContain(result.minimumChargeAdjustmentKopecks);
+  if (result.minimumChargeAdjustmentKopecks === MINIMUM_CHARGE_KOPECKS) {
+    expect(result.totalKopecks).toBe(MINIMUM_CHARGE_KOPECKS);
+  }
+};
+
+const price = (o: Order, now: Date = NOW) => {
+  const result = priceOrder(o, CATALOGUE, { now });
+  expectReconciles(result, o);
+  return result;
+};
 
 /**
- * Замовлення, на яких AC-20 перевіряє інваріанти розбивки.
+ * Представницький набір форм замовлення, на яких AC-20 перевіряє інваріанти.
  *
- * Список **засіяний на рівні модуля** представницьким набором форм, тож AC-20
- * не залежить від того, чи виконались тести вище: `vitest -t "AC-20"` поодинці
- * бачить рівно цей набір. У повному прогоні `track()` дописує сюди ще й кожне
- * замовлення з інших тестів, і AC-20 перевіряє інваріанти на всіх.
+ * Список **явний і незмінний**: спільного масиву, який наповнювали б інші тести,
+ * тут немає навмисно. Інакше покриття AC-20 залежало б від того, які тести
+ * встигли виконатись, і `vitest -t "AC-20"` перевіряв би не те саме, що повний
+ * прогін. Інваріанти при цьому не звужені до цього списку — `expectReconciles`
+ * викликається з `price()`, тобто на **кожному** замовленні, яке оцінює цей файл.
  */
 const FIXTURES: Order[] = [
   order({ customerTier: "gold", coupons: ["SAVE15"] }),
@@ -99,14 +146,10 @@ const FIXTURES: Order[] = [
   }),
   order({ items: [item({ unitPriceKopecks: MAX_MONEY_KOPECKS })] }),
 ];
-const track = (o: Order): Order => {
-  FIXTURES.push(o);
-  return o;
-};
 
 describe("priceOrder", () => {
   it("AC-1: Gold-рівень знижує товари, але не доставку", () => {
-    const result = price(track(order({ customerTier: "gold" })));
+    const result = price(order({ customerTier: "gold" }));
     expect(result.tierDiscountKopecks).toBe(10_000);
     expect(result.couponDiscountKopecks).toBe(0);
     expect(result.shippingKopecks).toBe(4_900);
@@ -114,7 +157,7 @@ describe("priceOrder", () => {
   });
 
   it("AC-2: промокод рахується від залишку після рівня, а не від початкової суми", () => {
-    const result = price(track(order({ customerTier: "gold", coupons: ["SAVE15"] })));
+    const result = price(order({ customerTier: "gold", coupons: ["SAVE15"] }));
     expect(result.tierDiscountKopecks).toBe(10_000);
     expect(result.couponDiscountKopecks).toBe(13_500); // 15% від 90 000, не від 100 000
     expect(result.totalKopecks).toBe(81_400);
@@ -124,12 +167,12 @@ describe("priceOrder", () => {
 
   it("AC-3: два промокоди на одну категорію застосовуються обидва, каскадом", () => {
     const result = price(
-      track(
+      
         order({
           items: [item({ unitPriceKopecks: 40_000 }), item({ unitPriceKopecks: 60_000, category: "fresh" })],
           coupons: ["FRESH10", "FRESH20"],
-        }),
-      ),
+        })
+      ,
     );
     expect(result.appliedCoupons).toEqual([
       { code: "FRESH10", discountKopecks: 6_000 },
@@ -140,13 +183,13 @@ describe("priceOrder", () => {
   });
 
   it("AC-4: знижка більша за суму обрізається, підсумок не стає відʼємним", () => {
-    const result = price(track(order({ items: [item({ unitPriceKopecks: 30_000 })], coupons: ["FIX500"] })));
+    const result = price(order({ items: [item({ unitPriceKopecks: 30_000 })], coupons: ["FIX500"] }));
     expect(result.couponDiscountKopecks).toBe(30_000); // а не 50 000
     expect(result.totalKopecks).toBe(4_900); // рівно доставка
   });
 
   it("AC-5: прострочений промокод пропускається з причиною, а не кидає виняток", () => {
-    const result = price(track(order({ coupons: ["AUTUMN10"] })));
+    const result = price(order({ coupons: ["AUTUMN10"] }));
     expect(result.couponDiscountKopecks).toBe(0);
     expect(result.totalKopecks).toBe(104_900);
     expect(result.rejectedCoupons).toEqual([{ code: "AUTUMN10", reason: "expired" }]);
@@ -163,7 +206,7 @@ describe("priceOrder", () => {
   });
 
   it("AC-7: поріг minSubtotal перевіряється проти вихідної суми, включно", () => {
-    const result = price(track(order({ customerTier: "gold", coupons: ["MIN1000"] })));
+    const result = price(order({ customerTier: "gold", coupons: ["MIN1000"] }));
     // Перевірка після знижки за рівнем дала б 90 000 < 100 000 і відмову.
     expect(result.rejectedCoupons).toEqual([]);
     expect(result.tierDiscountKopecks).toBe(10_000);
@@ -173,12 +216,12 @@ describe("priceOrder", () => {
 
   it("AC-8: категорійний промокод рахується від суми своєї категорії", () => {
     const result = price(
-      track(
+      
         order({
           items: [item({ unitPriceKopecks: 20_000, category: "fresh" }), item({ unitPriceKopecks: 80_000 })],
           coupons: ["FRESH25"],
-        }),
-      ),
+        })
+      ,
     );
     expect(result.couponDiscountKopecks).toBe(5_000); // 25% від 20 000, а не від 100 000
     expect(result.totalKopecks).toBe(99_900);
@@ -186,12 +229,12 @@ describe("priceOrder", () => {
 
   it("AC-9: пів копійки округлюється вгору, окремо в кожній категорії", () => {
     const result = price(
-      track(
+      
         order({
           customerTier: "gold",
           items: [item({ unitPriceKopecks: 12_345 }), item({ unitPriceKopecks: 12_345, category: "fresh" })],
-        }),
-      ),
+        })
+      ,
     );
     // 12 345 × 10% = 1 234,5 → 1 235 у кожній категорії.
     expect(result.tierDiscountKopecks).toBe(2_470);
@@ -201,7 +244,7 @@ describe("priceOrder", () => {
   });
 
   it("AC-10: порожнє замовлення не падає й лишається з нулем", () => {
-    const result = price(track(order({ items: [], coupons: ["SAVE10"] })));
+    const result = price(order({ items: [], coupons: ["SAVE10"] }));
     expect(result.subtotalKopecks).toBe(0);
     expect(result.tierDiscountKopecks).toBe(0);
     expect(result.couponDiscountKopecks).toBe(0);
@@ -212,31 +255,31 @@ describe("priceOrder", () => {
   });
 
   it("AC-11: невідомий код повертається обрізаним, але не приведеним до верхнього регістру", () => {
-    const result = price(track(order({ coupons: [" nosuch "] })));
+    const result = price(order({ coupons: [" nosuch "] }));
     expect(result.rejectedCoupons).toEqual([{ code: "nosuch", reason: "unknown_code" }]);
     expect(result.totalKopecks).toBe(104_900);
   });
 
   it("AC-12: той самий код, введений двічі, зараховується один раз", () => {
-    const result = price(track(order({ coupons: ["SAVE10", "SAVE10"] })));
+    const result = price(order({ coupons: ["SAVE10", "SAVE10"] }));
     expect(result.couponDiscountKopecks).toBe(10_000);
     expect(result.totalKopecks).toBe(94_900);
     expect(result.rejectedCoupons).toEqual([{ code: "SAVE10", reason: "duplicate_code" }]);
   });
 
   it("AC-13: код зіставляється без урахування регістру й пробілів", () => {
-    const applied = price(track(order({ coupons: [" save10 "] })));
+    const applied = price(order({ coupons: [" save10 "] }));
     expect(applied.appliedCoupons).toEqual([{ code: "SAVE10", discountKopecks: 10_000 }]);
     expect(applied.totalKopecks).toBe(94_900);
 
     // Нормалізація годує й перевірку дублів.
-    const duplicate = price(track(order({ coupons: ["save10", "SAVE10"] })));
+    const duplicate = price(order({ coupons: ["save10", "SAVE10"] }));
     expect(duplicate.couponDiscountKopecks).toBe(10_000);
     expect(duplicate.rejectedCoupons).toEqual([{ code: "SAVE10", reason: "duplicate_code" }]);
   });
 
   it("AC-14: некоректні дані купона не застосовуються й не кидають винятку", () => {
-    const result = price(track(order({ coupons: ["BAD120", "BAD125", "BADNEG", "BADDATE"] })));
+    const result = price(order({ coupons: ["BAD120", "BAD125", "BADNEG", "BADDATE"] }));
     expect(result.couponDiscountKopecks).toBe(0);
     expect(result.totalKopecks).toBe(104_900);
     expect(result.rejectedCoupons).toEqual([
@@ -248,7 +291,7 @@ describe("priceOrder", () => {
   });
 
   it("AC-15: категорійний купон без товарів цієї категорії — category_absent", () => {
-    const result = price(track(order({ coupons: ["DIGI10"] })));
+    const result = price(order({ coupons: ["DIGI10"] }));
     expect(result.rejectedCoupons).toEqual([{ code: "DIGI10", reason: "category_absent" }]);
     expect(result.totalKopecks).toBe(104_900);
   });
@@ -259,17 +302,17 @@ describe("priceOrder", () => {
       item({ unitPriceKopecks: 20_000, category: "fresh" }),
     ];
 
-    const fixedFirst = price(track(order({ items, coupons: ["SAVE200", "FRESH50"] })));
+    const fixedFirst = price(order({ items, coupons: ["SAVE200", "FRESH50"] }));
     expect(fixedFirst.couponDiscountKopecks).toBe(22_500); // 20 000 + 50% від решти fresh 5 000
     expect(fixedFirst.totalKopecks).toBe(7_400);
 
-    const percentFirst = price(track(order({ items, coupons: ["FRESH50", "SAVE200"] })));
+    const percentFirst = price(order({ items, coupons: ["FRESH50", "SAVE200"] }));
     expect(percentFirst.couponDiscountKopecks).toBe(25_000); // 10 000 + 15 000, решта 5 000 зникає
     expect(percentFirst.totalKopecks).toBe(4_900);
   });
 
   it("AC-17: повна знижка зʼїдає товари, але доставку не чіпає", () => {
-    const result = price(track(order({ country: "PL", customerTier: "gold", coupons: ["FULL100"] })));
+    const result = price(order({ country: "PL", customerTier: "gold", coupons: ["FULL100"] }));
     expect(result.tierDiscountKopecks).toBe(10_000);
     expect(result.couponDiscountKopecks).toBe(90_000);
     expect(result.shippingKopecks).toBe(19_900);
@@ -277,7 +320,7 @@ describe("priceOrder", () => {
   });
 
   it("AC-18: обнулене цифрове замовлення коштує мінімальну копійку", () => {
-    const result = price(track(order({ items: [item({ category: "digital" })], coupons: ["FULL100"] })));
+    const result = price(order({ items: [item({ category: "digital" })], coupons: ["FULL100"] }));
     expect(result.couponDiscountKopecks).toBe(100_000); // знижка не переписується
     expect(result.shippingKopecks).toBe(0);
     expect(result.minimumChargeAdjustmentKopecks).toBe(MINIMUM_CHARGE_KOPECKS);
@@ -286,18 +329,18 @@ describe("priceOrder", () => {
 
   it("AC-19: при кількох причинах відмови повертається перша за пріоритетом", () => {
     // Прострочений І не добирає порогу → expired, бо воно раніше в D-20.
-    const both = price(track(order({ coupons: ["LATEMIN"] })));
+    const both = price(order({ coupons: ["LATEMIN"] }));
     expect(both.rejectedCoupons).toEqual([{ code: "LATEMIN", reason: "expired" }]);
 
     // unknown_code стоїть перед duplicate_code, тож обидва входження — unknown.
-    const unknownTwice = price(track(order({ coupons: ["NOSUCH", "NOSUCH"] })));
+    const unknownTwice = price(order({ coupons: ["NOSUCH", "NOSUCH"] }));
     expect(unknownTwice.rejectedCoupons).toEqual([
       { code: "NOSUCH", reason: "unknown_code" },
       { code: "NOSUCH", reason: "unknown_code" },
     ]);
 
     // А ось прострочений код входить у «вже траплявся», тож другий — duplicate.
-    const expiredTwice = price(track(order({ coupons: ["AUTUMN10", "AUTUMN10"] })));
+    const expiredTwice = price(order({ coupons: ["AUTUMN10", "AUTUMN10"] }));
     expect(expiredTwice.rejectedCoupons).toEqual([
       { code: "AUTUMN10", reason: "expired" },
       { code: "AUTUMN10", reason: "duplicate_code" },
@@ -305,11 +348,11 @@ describe("priceOrder", () => {
   });
 
   it("AC-21: зіпсутий рядок замовлення вносить у базу нуль", () => {
-    const corrupt = track(
+    const corrupt = 
       order({
         items: [item(), item({ unitPriceKopecks: 20_000, quantity: -1, category: "fresh" })],
-      }),
-    );
+      })
+    ;
     const result = price(corrupt);
     expect(subtotalKopecks(corrupt)).toBe(80_000); // засіяна функція бачить −20 000
     expect(result.subtotalKopecks).toBe(100_000); // рушій зіпсутий рядок не рахує
@@ -317,7 +360,7 @@ describe("priceOrder", () => {
   });
 
   it("AC-22: при дублі коду в каталозі виграє перший запис у масиві", () => {
-    const result = price(track(order({ coupons: ["SAVE10"] })));
+    const result = price(order({ coupons: ["SAVE10"] }));
     expect(result.couponDiscountKopecks).toBe(10_000); // percent 10, а не percent 50
     expect(result.totalKopecks).toBe(94_900);
   });
@@ -334,7 +377,7 @@ describe("priceOrder", () => {
   });
 
   it("AC-24: expiresAt без явного зсуву — invalid_coupon, а не гра в часові пояси", () => {
-    const result = price(track(order({ coupons: ["TZLOCAL", "DATEONLY"] })));
+    const result = price(order({ coupons: ["TZLOCAL", "DATEONLY"] }));
     expect(result.couponDiscountKopecks).toBe(0);
     expect(result.totalKopecks).toBe(104_900);
     expect(result.rejectedCoupons).toEqual([
@@ -352,7 +395,7 @@ describe("priceOrder", () => {
   });
 
   it("AC-25: некоректний minSubtotalKopecks не дає порогу мовчки зникнути", () => {
-    const result = price(track(order({ coupons: ["MINNAN", "MINNEG", "MINFRAC"] })));
+    const result = price(order({ coupons: ["MINNAN", "MINNEG", "MINFRAC"] }));
     expect(result.couponDiscountKopecks).toBe(0);
     expect(result.totalKopecks).toBe(104_900);
     expect(result.rejectedCoupons).toEqual([
@@ -375,8 +418,21 @@ describe("priceOrder", () => {
     expect(() => price(order({ items: twoLines }))).toThrow(RangeError);
     expect(() => price(order({ items: [...twoLines].reverse() }))).toThrow(RangeError);
 
+    // Крайній випадок тієї самої перевірки: обидва рядки — безпечні цілі, а
+    // їхня сума вже ні. Саме тому межа стоїть на **сумі**: якби вона стояла на
+    // рядку, обидва пройшли б. Неточність сум понад 2⁵³ результату не змінює —
+    // будь-яка така сума на дев'ять порядків більша за межу й падає раніше.
+    const a = Number.MAX_SAFE_INTEGER;
+    const b = Number.MAX_SAFE_INTEGER - 1;
+    expect(Number.isSafeInteger(a)).toBe(true);
+    expect(Number.isSafeInteger(b)).toBe(true);
+    expect(Number.isSafeInteger(a + b)).toBe(false);
+    const unsafeSum = [item({ unitPriceKopecks: a }), item({ sku: "BB-1", unitPriceKopecks: b })];
+    expect(() => price(order({ items: unsafeSum }))).toThrow(RangeError);
+    expect(() => price(order({ items: [...unsafeSum].reverse() }))).toThrow(RangeError);
+
     // Рівно межа — валідне замовлення, рахується точно.
-    const atBound = price(track(order({ items: [item({ unitPriceKopecks: MAX_MONEY_KOPECKS })] })));
+    const atBound = price(order({ items: [item({ unitPriceKopecks: MAX_MONEY_KOPECKS })] }));
     expect(atBound.subtotalKopecks).toBe(MAX_MONEY_KOPECKS);
     expect(atBound.totalKopecks).toBe(MAX_MONEY_KOPECKS + 4_900);
 
@@ -389,7 +445,7 @@ describe("priceOrder", () => {
     expect(fixAtBound.couponDiscountKopecks).toBe(MAX_MONEY_KOPECKS);
 
     // Грошове поле купона понад межу — invalid_coupon, а не виняток.
-    const hugeCoupon = price(track(order({ coupons: ["FIXHUGE"] })));
+    const hugeCoupon = price(order({ coupons: ["FIXHUGE"] }));
     expect(hugeCoupon.rejectedCoupons).toEqual([{ code: "FIXHUGE", reason: "invalid_coupon" }]);
     expect(hugeCoupon.totalKopecks).toBe(104_900);
 
@@ -402,7 +458,7 @@ describe("priceOrder", () => {
   });
 
   it("AC-27: невідомі kind і category купона — invalid_coupon, а не знижка", () => {
-    const result = price(track(order({ coupons: ["KINDBAD", "CATBAD"] })));
+    const result = price(order({ coupons: ["KINDBAD", "CATBAD"] }));
     expect(result.couponDiscountKopecks).toBe(0);
     expect(result.totalKopecks).toBe(104_900);
     expect(result.rejectedCoupons).toEqual([
@@ -416,22 +472,51 @@ describe("priceOrder", () => {
 
   it("AC-28: зіпсутий рядок і зіпсутий запис каталогу не зупиняють розрахунок", () => {
     // Рядок, якого взагалі немає: `lineTotalKopecks(null)` кинув би TypeError.
-    const withNullLine = price(
-      track(order({ items: [item(), null as never], coupons: ["SAVE10"] })),
+    // Позиція `null` навмисно перебирається: `shippingKopecks` розіменовує
+    // кожен елемент, а `[].every()` зупиняється на першому нецифровому рядку —
+    // тож `null` у кінці нецифрового кошика «проходить» і на зеленому тесті
+    // ховає дірку. Перевіряємо обидві позиції й цифровий кошик.
+    for (const items of [
+      [item(), null as never],
+      [null as never, item()],
+    ]) {
+      const withNullLine = price(order({ items, coupons: ["SAVE10"] }));
+      expect(withNullLine.subtotalKopecks).toBe(100_000);
+      expect(withNullLine.couponDiscountKopecks).toBe(10_000);
+      expect(withNullLine.shippingKopecks).toBe(4_900);
+      expect(withNullLine.totalKopecks).toBe(94_900);
+    }
+
+    // Цифровий кошик із `null`: доставку рахуємо за придатними за формою
+    // рядками, тож знижка на доставку лишається (0), а не падає винятком.
+    const digitalWithNull = price(
+      order({ items: [item({ category: "digital" }), null as never] }),
     );
-    expect(withNullLine.subtotalKopecks).toBe(100_000);
-    expect(withNullLine.couponDiscountKopecks).toBe(10_000);
-    expect(withNullLine.totalKopecks).toBe(94_900);
+    expect(digitalWithNull.subtotalKopecks).toBe(100_000);
+    expect(digitalWithNull.shippingKopecks).toBe(0);
+    expect(digitalWithNull.totalKopecks).toBe(100_000);
+
+    // Зіпсута сума рядок із кошика не викидає: він і далі робить кошик
+    // нецифровим, тож доставка лишається платною (D-2).
+    const digitalPlusCorrupt = price(
+      
+        order({
+          items: [item({ category: "digital" }), item({ sku: "BB-1", quantity: -1 })],
+        })
+      ,
+    );
+    expect(digitalPlusCorrupt.subtotalKopecks).toBe(100_000);
+    expect(digitalPlusCorrupt.shippingKopecks).toBe(4_900);
 
     // Категорію позначає лише придатний рядок: єдиний fresh-рядок зіпсутий, тож
     // fresh-купон — `category_absent`, а не `no_remaining_amount` (D-19, D-22).
     const corruptFresh = price(
-      track(
+      
         order({
           items: [item(), item({ sku: "BB-1", category: "fresh", quantity: -1 })],
           coupons: ["FRESH10"],
-        }),
-      ),
+        })
+      ,
     );
     expect(corruptFresh.rejectedCoupons).toEqual([
       { code: "FRESH10", reason: "category_absent" },
@@ -443,9 +528,9 @@ describe("priceOrder", () => {
       { code: null } as never,
       ...CATALOGUE,
     ];
-    const result = priceOrder(order({ coupons: ["SAVE10", "NOSUCH"] }), brokenCatalogue, {
-      now: NOW,
-    });
+    const brokenOrder = order({ coupons: ["SAVE10", "NOSUCH"] });
+    const result = priceOrder(brokenOrder, brokenCatalogue, { now: NOW });
+    expectReconciles(result, brokenOrder);
     expect(result.appliedCoupons).toEqual([{ code: "SAVE10", discountKopecks: 10_000 }]);
     expect(result.rejectedCoupons).toEqual([{ code: "NOSUCH", reason: "unknown_code" }]);
     expect(result.totalKopecks).toBe(94_900);
@@ -453,45 +538,20 @@ describe("priceOrder", () => {
     // Третій зовнішній вхід: код, який не є рядком. `normalizeCode` кинув би на
     // `.trim()`; замість цього — `unknown_code` з порожнім кодом, і сусідній
     // валідний код усе одно обробляється (D-11).
-    const badCode = price(track(order({ coupons: [null as never, "SAVE10"] })));
+    const badCode = price(order({ coupons: [null as never, "SAVE10"] }));
     expect(badCode.rejectedCoupons).toEqual([{ code: "", reason: "unknown_code" }]);
     expect(badCode.appliedCoupons).toEqual([{ code: "SAVE10", discountKopecks: 10_000 }]);
     expect(badCode.totalKopecks).toBe(94_900);
   });
 
-  // AC-20 стоїть останнім навмисно, поза числовим порядком: він проходить по
-  // FIXTURES, які наповнює track() у тестах вище. Якщо перенести його на місце
-  // за номером, він побачить лише частину замовлень.
-  it("AC-20: розбивка сходиться копійка в копійку на кожному із замовлень вище", () => {
+  // AC-20 стоїть останнім навмисно, поза числовим порядком: усі попередні тести
+  // вже пройшли через `expectReconciles`, тож тут лишається довести інваріанти
+  // на явному наборі форм — і цей набір той самий, чи запускати файл цілком, чи
+  // лише `vitest -t "AC-20"`.
+  it("AC-20: розбивка сходиться копійка в копійку на кожній формі замовлення", () => {
     expect(FIXTURES.length).toBeGreaterThan(0);
     for (const fixture of FIXTURES) {
-      const result = price(fixture);
-
-      expect(result.totalKopecks).toBe(
-        result.subtotalKopecks -
-          result.tierDiscountKopecks -
-          result.couponDiscountKopecks +
-          result.shippingKopecks +
-          result.minimumChargeAdjustmentKopecks,
-      );
-
-      expect(result.couponDiscountKopecks).toBe(
-        result.appliedCoupons.reduce((sum, entry) => sum + entry.discountKopecks, 0),
-      );
-
-      // Кожен введений код зустрічається рівно один раз.
-      expect(result.appliedCoupons.length + result.rejectedCoupons.length).toBe(
-        fixture.coupons.length,
-      );
-
-      // Інваріант 6 (D-24): база ніколи не виходить за спільну межу.
-      expect(result.subtotalKopecks).toBeGreaterThanOrEqual(0);
-      expect(result.subtotalKopecks).toBeLessThanOrEqual(MAX_MONEY_KOPECKS);
-
-      expect(result.totalKopecks).toBeGreaterThanOrEqual(result.shippingKopecks);
-      if (result.subtotalKopecks > 0) {
-        expect(result.totalKopecks).toBeGreaterThanOrEqual(MINIMUM_CHARGE_KOPECKS);
-      }
+      expectReconciles(priceOrder(fixture, CATALOGUE, { now: NOW }), fixture);
     }
   });
 });

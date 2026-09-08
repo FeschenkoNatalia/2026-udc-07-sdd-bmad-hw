@@ -269,7 +269,12 @@ a line whose `lineTotalKopecks` is not a non-negative integer, or one whose
 `category` falls outside the declared union, MUST contribute 0 to the discount
 base, so that no category remainder can start below zero and the reported
 subtotal always equals the sum of the category remainders. The shape check MUST
-precede reading the line, since `lineTotalKopecks` raises on a non-object. A
+precede reading the line, since `lineTotalKopecks` raises on a non-object, and it
+MUST also be applied before the shipping fee is computed, since
+`shippingKopecks` walks the same array to test its all-digital waiver. Shipping
+is therefore read from the shape-valid lines; lines carrying a bad amount or an
+unknown category stay in that set, so a cart of digital goods plus one corrupt
+line is still charged shipping rather than silently waived. A
 category counts as present, for the purpose of `category_absent`, only where at
 least one line contributed to it: a cart whose only `fresh` line is corrupt holds
 no fresh goods. The reported `subtotalKopecks` is therefore
@@ -280,7 +285,10 @@ The goods subtotal MUST NOT exceed `MAX_MONEY_KOPECKS` (1000000000); an order
 that does MUST raise a `RangeError` rather than be priced. The check is on the
 sum, never line by line: capping lines would make the priced total depend on the
 order of `order.items`, and zeroing an oversized line would hand the goods over
-for the price of shipping. The bound is chosen so every intermediate product
+for the price of shipping. Checking after accumulation is safe because precision
+is only lost beyond `2^53`, nine orders of magnitude above the bound, and adding
+non-negative values cannot drive a sum below its exact value — an imprecise total
+is still far above the bound and still raises. The bound is chosen so every intermediate product
 stays exact: `base * pct <= 1e9 * 100 = 1e11 < 2^53`. It covers the goods base
 and the money-valued coupon fields, not `shippingKopecks`, which is seeded
 behaviour left untouched; `totalKopecks` may therefore reach
@@ -296,8 +304,9 @@ behaviour left untouched; `totalKopecks` may therefore reach
 
 #### Scenario: AC-26 — an unpriceable order fails closed, the boundary itself prices
 
-- **WHEN** the goods subtotal exceeds the bound — one line at 2000000000, or two
-  lines of 600000000 in either order
+- **WHEN** the goods subtotal exceeds the bound — one line at 2000000000, two
+  lines of 600000000 in either order, or two lines that are each a safe integer
+  whose sum is not (`MAX_SAFE_INTEGER` and `MAX_SAFE_INTEGER - 1`)
 - **THEN** `priceOrder` raises a `RangeError` and returns no breakdown, the same
   way round, so the priced result never depends on the order of `order.items`
 - **WHEN** a line prices at exactly `MAX_MONEY_KOPECKS`
@@ -314,9 +323,13 @@ behaviour left untouched; `totalKopecks` may therefore reach
 #### Scenario: AC-28 — a malformed line or catalogue entry is skipped, not fatal
 
 - **WHEN** `order.items` holds `null` beside a `standard` line of 100000 and
-  `SAVE10` is entered
+  `SAVE10` is entered, in either position
 - **THEN** no exception is raised, `subtotalKopecks` is 100000, the coupon
-  discount is 10000 and the total is 94900
+  discount is 10000, shipping is 4900 and the total is 94900
+- **WHEN** the cart is a `digital` line of 100000 plus `null`
+- **THEN** shipping is 0 and the total is 100000; where the second line is
+  instead a shape-valid line with a corrupt amount, shipping stays 4900 because
+  the cart is not all-digital
 - **WHEN** the only `fresh` line is corrupt (`quantity: -1`) and `FRESH10` is
   entered
 - **THEN** the reason is `category_absent`, not `no_remaining_amount`: a line
@@ -342,7 +355,10 @@ product exact; `totalKopecks` adds undiscounted shipping on top of it.
 
 #### Scenario: AC-20 — the arithmetic is auditable on any input
 
-- **WHEN** the engine is called with any of the orders above
+- **WHEN** the engine is called with each of a fixed, explicitly listed set of
+  order shapes — and, separately, with every order any other scenario prices
 - **THEN** the reconciliation identity holds exactly in integer kopecks, and
   every entered code appears exactly once across `appliedCoupons` and
   `rejectedCoupons`
+- The set MUST NOT be accumulated from whatever other tests happened to run, so
+  that checking this scenario alone covers exactly what a full run covers

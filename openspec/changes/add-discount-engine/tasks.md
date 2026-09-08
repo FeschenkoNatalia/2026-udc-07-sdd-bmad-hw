@@ -62,7 +62,11 @@
       AC-1 through AC-19 and AC-21 through AC-28.
 - [ ] 6.3 Add AC-20 as a reconciliation check asserting
       `total = subtotal - tier - coupons + shipping + minimumChargeAdjustment`
-      and `couponDiscount = sum(appliedCoupons)` across every fixture.
+      and `couponDiscount = sum(appliedCoupons)` across an explicit fixture list.
+      Keep the check free of shared mutable state: run it from the file's own
+      pricing helper so every order the suite prices is covered, and let AC-20
+      assert the same invariants over a fixed set, so `vitest -t "AC-20"` alone
+      covers exactly what a full run covers.
 - [ ] 6.4 Confirm the 8 seeded tests in `pricing.test.ts` still pass and that
       `npm run typecheck` is clean.
 
@@ -87,8 +91,10 @@ Added after the spec was frozen, from the Task E spec reviewer and the PR review
       and raise a `RangeError` when the goods *subtotal* exceeds it — checked on
       the sum so the result cannot depend on line order, and closed rather than
       zeroed so the goods are never given away (AC-26).
-- [ ] 8.4 Seed the AC-20 fixture list at module scope so the reconciliation test
-      passes when run alone.
+- [ ] 8.4 Replace the mutable AC-20 fixture array with an explicit module-scope
+      list and move the invariant assertions into the shared `price()` helper, so
+      the reconciliation check depends on no test-execution order and covers
+      every priced order rather than only the tracked ones.
 - [ ] 8.5 Validate the union-typed coupon fields as data: `kind` exactly
       `percent` or `fixed`, `category` — when present — one of the declared
       three, both `invalid_coupon` otherwise and both decided before
@@ -100,6 +106,13 @@ Added after the spec was frozen, from the Task E spec reviewer and the PR review
       `unknown_code` under an empty code, and mark a category present only where
       a line actually contributed, so a corrupt-only category reads
       `category_absent` (AC-28).
+- [ ] 8.8 Compute the shipping fee from the shape-valid lines rather than the raw
+      `order.items`: `shippingKopecks` walks the array itself, so a non-object
+      entry throws there even after step 0 has neutralised it. Keep lines with a
+      bad amount in that set, so a digital cart plus one corrupt line is still
+      charged shipping. Assert both positions of the bad entry — `every()`
+      short-circuits on the first non-digital line, so a single-position test
+      passes without the fix (AC-28).
 - [ ] 8.7 Scope `MAX_MONEY_KOPECKS` explicitly to the goods base and the coupon
       money fields, leaving undiscounted shipping outside it, so `totalKopecks`
       above the bound is documented rather than contradictory (AC-26).
