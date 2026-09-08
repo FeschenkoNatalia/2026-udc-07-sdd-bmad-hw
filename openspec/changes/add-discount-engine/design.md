@@ -53,12 +53,16 @@ consequence is that the tier discount can differ by one kopeck from rounding the
 whole subtotal at once — pinned by scenario AC-9 so it can never be "fixed" by
 accident.
 
-**One money bound, checked on the sum, enforced by throwing.** The goods base and
-every money-valued coupon field — a line total, a fixed coupon `value`, a
-`minSubtotalKopecks` — are bounded by `MAX_MONEY_KOPECKS` (1e9 kopecks, 10M UAH),
-picked from the arithmetic rather than the business:
-`base * pct <= 1e9 * 100 = 1e11 < 2^53`, so no intermediate product can lose
-precision and the rounding rule above stays exact everywhere.
+**One money bound, checked on the sum, enforced by throwing.** Two things are
+bounded by `MAX_MONEY_KOPECKS` (1e9 kopecks, 10M UAH): the **goods base**, meaning
+the accumulated sum of the contributing lines, and the **money-valued coupon
+fields**, a fixed `value` and a `minSubtotalKopecks`. An individual line total is
+not among them and is never validated against the bound — a line of 2e9 is carried
+into the base and stopped by the check on the sum, which raises, rather than being
+refused as an out-of-range field the way an oversized coupon value is refused as
+`invalid_coupon` (AC-26). The number is picked from the arithmetic rather than the
+business: `base * pct <= 1e9 * 100 = 1e11 < 2^53`, so no intermediate product can
+lose precision and the rounding rule above stays exact everywhere.
 
 The bound deliberately stops there. `shippingKopecks` is seeded behaviour this
 change does not touch, so `totalKopecks` can exceed the bound by the shipping fee
@@ -101,6 +105,14 @@ negative line total would start a category remainder below zero, leave
 `roundHalfUp` (defined only for a non-negative base) undefined, and hand out free
 money to a crafted cart. Clamping at the line rather than the category stops one
 corrupt line from eating a sound neighbour.
+
+Each factor is judged on its own, not through the product it happens to make.
+`50.5 * 2`, `-100 * -1` and `-0.5 * -200` all arrive as clean non-negative
+integers, so a check on `lineTotalKopecks` alone waves them through — yet half a
+kopeck is not money and a line priced below zero and counted below zero is not
+goods. The product is still checked afterwards, and still earns its place: two
+enormous but individually valid factors multiply to `Infinity`, which no test of
+the factors would catch.
 
 The shape of the line is checked before the line is read: `lineTotalKopecks`
 dereferences its argument, so a `null` entry would throw and break the very
@@ -146,8 +158,12 @@ absorb. Every other field is compared with `===` or inspected with
 `Number.isInteger`, neither of which converts, so no guard is needed there.
 
 The guarding stops at the element. A `null` entry in a cart is customer data and
-must price; `order.items` not being an array at all is a broken call, and the
-engine fails on it exactly as it fails on a `now` that is not a `Date`. Drawing
+must price; the call's own shape — `order` and `options` as objects, the three
+collections as arrays, `now` as a `Date` — is the caller's contract, and every
+level of it is checked explicitly. Checking only the innermost level would leave
+the same defect one floor up: a non-object `options` reads `.now` as absent and
+reaches the wall clock, which is the nondeterministic expiry the `now` rule
+exists to prevent. Drawing
 the line anywhere further out would mean inventing a total for a call that does
 not describe an order — and the most likely invention, treating a missing array
 as an empty one, is the worst of them: it prices as a valid empty cart and moves

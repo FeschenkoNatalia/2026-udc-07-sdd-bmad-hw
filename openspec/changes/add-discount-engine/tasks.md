@@ -48,8 +48,12 @@
 
 ## 5. Total and minimum charge
 
-- [ ] 5.1 Add undiscounted `shippingKopecks(order)` to the goods remainder
-      (AC-17).
+- [ ] 5.1 Add the undiscounted shipping fee to the goods remainder, computing it
+      from the shape-valid view of `order.items` rather than the raw array — see
+      8.8, which this item must not be read against: passing the raw array lets a
+      non-object line raise inside `shippingKopecks` after step 0 has already
+      neutralised it. Lines with a bad amount or category stay in that view
+      (AC-17, AC-28).
 - [ ] 5.2 Apply the minimum charge when `subtotalKopecks > 0` and the total is
       0, reporting it in `minimumChargeAdjustmentKopecks` without altering
       `couponDiscountKopecks` (AC-18); leave an empty order at 0 (AC-10).
@@ -106,7 +110,19 @@ Added after the spec was frozen, from the Task E spec reviewer and the PR review
       `unknown_code` under an empty code, and mark a category present only where
       a line actually contributed, so a corrupt-only category reads
       `category_absent` (AC-28).
-- [ ] 8.9 Type-check the two fields that are handed to coercing operations
+- [ ] 8.9 Validate the call's own shape before pricing, at every level:
+      `order` and `options` must be objects, `order.items`, `order.coupons` and
+      `catalogue` must each be an array, and `options.now`, when supplied, a valid
+      `Date` — `null` is a mistake, not an omission. All raise `RangeError`;
+      omitting `options` stays legal. `for...of` accepts any iterable, so without
+      the array check `items: "x"` prices as an empty, free cart, and without the
+      object check `options: "x"` silently falls back to the wall clock (AC-23).
+- [ ] 8.10 Require `unitPriceKopecks` and `quantity` to each be a non-negative
+      integer in its own right, not merely their product: `50.5 * 2` and
+      `-100 * -1` both yield clean non-negative integers, yet half a kopeck is
+      not money and a negatively-priced, negatively-counted line is not goods
+      (AC-21).
+- [ ] 8.11 Type-check the two fields that are handed to coercing operations
       before they are used: `expiresAt` before the pattern match, and
       `unitPriceKopecks`/`quantity` before `lineTotalKopecks` multiplies them.
       A symbol or bigint raises on conversion instead of failing the check that

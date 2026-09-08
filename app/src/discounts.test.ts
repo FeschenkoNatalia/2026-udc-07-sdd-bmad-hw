@@ -360,6 +360,20 @@ describe("priceOrder", () => {
     expect(subtotalKopecks(corrupt)).toBe(80_000); // засіяна функція бачить −20 000
     expect(result.subtotalKopecks).toBe(100_000); // рушій зіпсутий рядок не рахує
     expect(result.totalKopecks).toBe(104_900);
+
+    // Дробовий множник, чий добуток — ціле: 50,5 × 2 = 101 пройшло б перевірку
+    // добутку, але пів копійки не є грошима, а дробова кількість — валідним
+    // рядком кошика (D-22). Обидва поля перевіряються окремо.
+    for (const bad of [
+      { unitPriceKopecks: 50.5, quantity: 2 }, // дробова ціна, ціле 101
+      { unitPriceKopecks: 202, quantity: 0.5 }, // дробова кількість, ціле 101
+      { unitPriceKopecks: -100, quantity: -1 }, // два мінуси дають цілий +100
+    ]) {
+      const fractional = price(order({ items: [item(), item({ sku: "CC-1", ...bad })] }));
+      expect(fractional.subtotalKopecks).toBe(100_000); // 101 у базу не потрапляє
+      expect(fractional.shippingKopecks).toBe(4_900); // але рядок лишається в кошику
+      expect(fractional.totalKopecks).toBe(104_900);
+    }
   });
 
   it("AC-22: при дублі коду в каталозі виграє перший запис у масиві", () => {
@@ -368,11 +382,44 @@ describe("priceOrder", () => {
     expect(result.totalKopecks).toBe(94_900);
   });
 
-  it("AC-23: зіпсутий now падає одразу, а не мовчки оживляє прострочені купони", () => {
+  it("AC-23: зіпсутий виклик падає одразу, а не мовчки оживляє купони чи оцінює порожній кошик", () => {
     const withExpired = order({ coupons: ["AUTUMN10"] });
     expect(() => priceOrder(withExpired, CATALOGUE, { now: new Date("не дата") })).toThrow(
       RangeError,
     );
+    // `null` — не «не передали»: `??` мовчки взяв би системний годинник, і та
+    // сама відповідь залежала б від того, коли її спитали.
+    expect(() => priceOrder(withExpired, CATALOGUE, { now: null as never })).toThrow(RangeError);
+    // Не-Date падає теж RangeError, а не TypeError із надр `getTime`.
+    for (const bad of [{}, "2026-01-01", 0]) {
+      expect(() => priceOrder(withExpired, CATALOGUE, { now: bad as never })).toThrow(RangeError);
+    }
+
+    // Контейнери — теж контракт виклику, а не дані клієнта. `for...of` бере
+    // будь-який iterable, тож рядок "x" інакше пройшов би як порожній кошик.
+    expect(() => priceOrder(order({ items: "x" as never }), CATALOGUE, { now: NOW })).toThrow(
+      RangeError,
+    );
+    expect(() => priceOrder(order({ coupons: "AB" as never }), CATALOGUE, { now: NOW })).toThrow(
+      RangeError,
+    );
+    expect(() => priceOrder(order(), "x" as never, { now: NOW })).toThrow(RangeError);
+    expect(() => priceOrder(order({ items: undefined as never }), CATALOGUE, { now: NOW })).toThrow(
+      RangeError,
+    );
+
+    // `order` і `options` — теж контейнери контракту. Без перевірки `options`
+    // рядок "x" дав би `.now === undefined`, рушій узяв би системний годинник —
+    // і термін дії купона вирішувався б тим, **коли** спитали.
+    for (const badOrder of [null, undefined, "x", 42]) {
+      expect(() => priceOrder(badOrder as never, CATALOGUE, { now: NOW })).toThrow(RangeError);
+    }
+    for (const badOptions of [null, "x", 42]) {
+      expect(() => priceOrder(order(), CATALOGUE, badOptions as never)).toThrow(RangeError);
+    }
+    // Контроль: `options` не передали взагалі — це законно, дефолт лишається.
+    expect(() => priceOrder(order({ coupons: [] }), CATALOGUE)).not.toThrow();
+
     // Контроль: з валідним now той самий купон просто відхиляється.
     expect(price(withExpired).rejectedCoupons).toEqual([
       { code: "AUTUMN10", reason: "expired" },

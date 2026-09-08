@@ -134,22 +134,49 @@ function noRemainders(): Remainders {
  *
  * That guarantee covers the *elements* of the three externally-shaped collections
  * — `order.items`, `catalogue`, `order.coupons` — whatever their runtime type. It
- * does not cover the collections themselves: a non-array there is a broken call,
- * not customer data, and throws exactly as a non-`Date` `options.now` does. On
- * well-formed containers, two inputs throw instead of pricing: an invalid
- * `options.now`, which is a caller bug rather than customer data (D-23), and a
- * goods subtotal above `MAX_MONEY_KOPECKS`, which cannot be priced exactly (D-24).
+ * does not cover the call's own shape. Four things raise a `RangeError` instead
+ * of pricing. Three are caller bugs rather than customer data (D-23): an `order`
+ * or `options` that is not an object, a collection that is not an array, and an
+ * `options.now` that is not a valid `Date` — `null` included, since it means a
+ * mistake rather than "not supplied". The fourth is a goods subtotal above
+ * `MAX_MONEY_KOPECKS`, which cannot be priced exactly (D-24). Omitting `options`
+ * entirely is legal and keeps the default.
  */
 export function priceOrder(
   order: Order,
   catalogue: Coupon[],
   options: PriceOptions = {},
 ): PriceBreakdown {
-  const now = options.now ?? new Date();
+  // Step -1 — the call's own shape, which is the caller's contract rather than
+  // customer data (D-23). Every violation here fails loudly, because the
+  // alternatives all price something the caller did not describe: `for...of`
+  // accepts *any* iterable, so `items: "x"` would walk its characters, skip each
+  // as a non-object and return a total of 0 — a cart silently priced as empty and
+  // free; and a non-object `options` would read `.now` as `undefined` and fall
+  // back to the wall clock, deciding coupon expiry by when the call happened.
+  if (order === null || typeof order !== "object") {
+    throw new RangeError("priceOrder: order must be an object");
+  }
+  if (options === null || typeof options !== "object") {
+    throw new RangeError("priceOrder: options must be an object");
+  }
+  for (const [name, value] of [
+    ["order.items", order.items],
+    ["order.coupons", order.coupons],
+    ["catalogue", catalogue],
+  ] as const) {
+    if (!Array.isArray(value)) {
+      throw new RangeError(`priceOrder: ${name} must be an array`);
+    }
+  }
+
+  // `??` would treat `null` as "not supplied" and quietly fall back to the wall
+  // clock, making the price non-deterministic; only `undefined` means absent.
   // A broken clock must fail loudly: every NaN comparison is false, so an invalid
   // `now` would silently bring every expired coupon back to life (D-23).
-  if (Number.isNaN(now.getTime())) {
-    throw new RangeError("priceOrder: options.now is an Invalid Date");
+  const now = options.now === undefined ? new Date() : options.now;
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+    throw new RangeError("priceOrder: options.now is not a valid Date");
   }
 
   // Step 0 — base. A malformed line contributes nothing (D-22): not an object,
@@ -169,7 +196,18 @@ export function priceOrder(
     // Same coercion trap as `expiresAt`, in the seeded helper: `lineTotalKopecks`
     // multiplies the two fields, and a symbol or bigint throws on that
     // multiplication rather than yielding `NaN` for the check below (D-22).
-    if (typeof line.unitPriceKopecks !== "number" || typeof line.quantity !== "number") continue;
+    // Each factor must be a non-negative whole number in its own right, not just
+    // their product: `50.5 * 2` and `-100 * -1` both come out as clean
+    // non-negative integers, yet half a kopeck is not money and a cart line with
+    // a negative price and a negative quantity is not goods (D-22).
+    if (
+      !Number.isInteger(line.unitPriceKopecks) ||
+      line.unitPriceKopecks < 0 ||
+      !Number.isInteger(line.quantity) ||
+      line.quantity < 0
+    ) {
+      continue;
+    }
     const lineTotal = lineTotalKopecks(line);
     if (Number.isInteger(lineTotal) && lineTotal >= 0 && CATEGORIES.includes(line.category)) {
       remaining[line.category] += lineTotal;

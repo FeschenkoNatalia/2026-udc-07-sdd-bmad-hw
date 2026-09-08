@@ -101,9 +101,14 @@ runtime type. It does NOT cover the collections themselves: a non-array there is
 a violation of the call contract, not customer data, and MUST fail loudly for the
 same reason an invalid `now` does — pricing a structurally invalid call would
 turn `items: undefined` into a silent empty cart that passes on down the
-checkout. Beyond that, exactly two inputs raise instead of pricing: an invalid
-`now`, which is a caller error rather than customer data, and a goods subtotal
-above `MAX_MONEY_KOPECKS`, which cannot be priced exactly. Every code entered MUST
+checkout. In full, four inputs MUST raise a `RangeError` instead of being priced:
+an `order` or `options` that is not an object; a collection that is not an array;
+an `options.now` that is not a valid `Date`, `null` included, since `null` means a
+mistake rather than "not supplied"; and a goods subtotal above
+`MAX_MONEY_KOPECKS`, which cannot be priced exactly. The first three are caller
+errors rather than customer data — a non-object `options` reads `.now` as absent
+and would otherwise fall back to the wall clock, deciding coupon expiry by when
+the call happened. Omitting `options` entirely is legal. Nothing else raises. Every code entered MUST
 appear exactly once in either `appliedCoupons` or `rejectedCoupons`, both ordered
 as typed. A code absent from the catalogue MUST be reported as `unknown_code` on
 every occurrence; `duplicate_code` applies only after the code has been found in
@@ -121,9 +126,13 @@ explicit offset (`Z` or `±HH:MM`); anything else — including a date without a
 time — MUST be rejected as `invalid_coupon`, so the outcome cannot depend on the
 host time zone. The string check MUST precede the pattern match rather than rely
 on it: matching converts its argument with `ToString`, which throws on a symbol
-instead of failing to match, and an unusable coupon must never abort a price. Every money-valued coupon field — a fixed `value` and a
-`minSubtotalKopecks` when present — MUST be a non-negative integer no greater
-than `MAX_MONEY_KOPECKS`, or the coupon is `invalid_coupon`. The two union-typed
+instead of failing to match, and an unusable coupon must never abort a price. A percent coupon's `value` MUST be an integer from 0 to 100 inclusive; anything
+outside that — a fraction, a negative, or a percentage above 100 — is
+`invalid_coupon`, since a fractional percentage would reintroduce floating-point
+money and a value above 100 would discount more than the goods are worth. Every
+money-valued coupon field — a fixed `value` and a `minSubtotalKopecks` when
+present — MUST be a non-negative integer no greater than `MAX_MONEY_KOPECKS`, or
+the coupon is `invalid_coupon`. The two union-typed
 fields are validated as data as well: `kind` MUST be exactly `percent` or
 `fixed`, and a `category`, when present, MUST be one of `standard`, `fresh`,
 `digital`; either outside its union is `invalid_coupon`, decided before
@@ -209,12 +218,21 @@ than one rejection reason applies, the first of this order MUST be reported:
   through to the fixed branch and pays out 50000 kopecks, and an unchecked
   `category` reports `category_absent`, blaming the cart for a broken coupon
 
-#### Scenario: AC-23 — a broken clock fails loudly
+#### Scenario: AC-23 — a broken call fails loudly
 
 - **WHEN** `priceOrder` is called with `options.now` set to an Invalid Date on an
   order carrying the expired coupon `AUTUMN10`
-- **THEN** the call throws instead of returning a breakdown, so the expired
-  coupon cannot come back to life through comparisons against `NaN`
+- **THEN** the call raises a `RangeError` instead of returning a breakdown, so the
+  expired coupon cannot come back to life through comparisons against `NaN`
+- **WHEN** `options.now` is `null`, or any value that is not a `Date`
+- **THEN** the call raises rather than falling back to the wall clock, which would
+  make the same order price differently depending on when it was asked
+- **WHEN** `order` or `options` is not an object, or `order.items`,
+  `order.coupons` or `catalogue` is not an array — `items: "x"` included, which is
+  iterable and would otherwise be walked character by character and priced as an
+  empty, free cart
+- **THEN** the call raises a `RangeError`; omitting `options` entirely stays legal
+  and keeps the default
 
 #### Scenario: AC-22 — the first catalogue entry wins on a duplicated code
 
@@ -273,8 +291,11 @@ order with no items MUST remain at a total of zero.
 ### Requirement: Malformed order lines are neutralised
 
 The engine SHALL NOT reject an order line by line. A line that is not an object,
-a line whose `unitPriceKopecks` or `quantity` is not a number, a line whose
-`lineTotalKopecks` is not a non-negative integer, or one whose `category` falls
+a line whose `unitPriceKopecks` or `quantity` is not a non-negative integer —
+checked on each factor, not only on their product, since `50.5 * 2` and
+`-100 * -1` both come out as clean non-negative integers while half a kopeck is
+not money and a negatively-priced, negatively-counted line is not goods — a line whose `lineTotalKopecks` is not a non-negative
+integer, or one whose `category` falls
 outside the declared union, MUST contribute 0 to the discount base, so that no category remainder can start below zero and the reported
 subtotal always equals the sum of the category remainders. The shape check MUST
 precede reading the line, since `lineTotalKopecks` raises on a non-object and
@@ -289,7 +310,12 @@ category counts as present, for the purpose of `category_absent`, only where at
 least one line contributed to it: a cart whose only `fresh` line is corrupt holds
 no fresh goods. The reported `subtotalKopecks` is therefore
 the sum of the contributing lines, which equals `subtotalKopecks(order)` for any
-well-formed order.
+well-formed order. The remaining order fields, `country` and `customerTier`, are
+NOT validated here: they are consumed by the seeded `shippingKopecks` and
+`tierPercent`, where any unexpected value falls to a declared default — anything
+other than `"UA"` ships internationally, an unknown tier gives 0%. Neither
+default gives money away, and both belong to `pricing.ts`, which this change does
+not touch.
 
 The goods subtotal MUST NOT exceed `MAX_MONEY_KOPECKS` (1000000000); an order
 that does MUST raise a `RangeError` rather than be priced. The check is on the
