@@ -295,11 +295,17 @@ The goods subtotal MUST NOT exceed `MAX_MONEY_KOPECKS` (1000000000); an order
 that does MUST raise a `RangeError` rather than be priced. The check is on the
 sum, never line by line: capping lines would make the priced total depend on the
 order of `order.items`, and zeroing an oversized line would hand the goods over
-for the price of shipping. Checking after accumulation is safe because precision
-is only lost beyond `2^53`, nine orders of magnitude above the bound, and adding
-non-negative values cannot drive a sum below its exact value — an imprecise total
-is still far above the bound and still raises. The bound is chosen so every intermediate product
-stays exact: `base * pct <= 1e9 * 100 = 1e11 < 2^53`. It covers the goods base
+for the price of shipping. Checking after accumulation is safe, though not
+because addition preserves the exact value — it does not: `MAX_SAFE_INTEGER +
+(MAX_SAFE_INTEGER - 1)` yields `18014398509481980` for an exact
+`18014398509481981`, rounding *down* by one. It is safe because of scale and
+monotonicity: precision is only lost beyond `2^53`, six orders of magnitude above
+the bound, where one ulp is 2 kopecks, so a sum understated by a few kopecks at
+that size is still vastly above the bound; and accumulating non-negative
+contributions can never decrease the running total (`fl(s + x) >= s` for
+`x >= 0`), so a sum that has passed the bound cannot fall back under it. The
+bound is chosen so every intermediate product stays exact:
+`base * pct <= 1e9 * 100 = 1e11 < 2^53`. It covers the goods base
 and the money-valued coupon fields, not `shippingKopecks`, which is seeded
 behaviour left untouched; `totalKopecks` may therefore reach
 `MAX_MONEY_KOPECKS` plus shipping.

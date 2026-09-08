@@ -130,10 +130,15 @@ function noRemainders(): Remainders {
  * throws — an unusable coupon comes back in `rejectedCoupons`, a malformed
  * catalogue entry is skipped by the lookup, and a code that is not a string is
  * `unknown_code` — and neither does a single malformed order line, which simply
- * contributes 0 (D-22). Exactly two inputs throw instead
- * of pricing: an invalid `options.now`, which is a caller bug rather than customer
- * data (D-23), and a goods subtotal above `MAX_MONEY_KOPECKS`, which cannot be
- * priced exactly (D-24).
+ * contributes 0 (D-22).
+ *
+ * That guarantee covers the *elements* of the three externally-shaped collections
+ * — `order.items`, `catalogue`, `order.coupons` — whatever their runtime type. It
+ * does not cover the collections themselves: a non-array there is a broken call,
+ * not customer data, and throws exactly as a non-`Date` `options.now` does. On
+ * well-formed containers, two inputs throw instead of pricing: an invalid
+ * `options.now`, which is a caller bug rather than customer data (D-23), and a
+ * goods subtotal above `MAX_MONEY_KOPECKS`, which cannot be priced exactly (D-24).
  */
 export function priceOrder(
   order: Order,

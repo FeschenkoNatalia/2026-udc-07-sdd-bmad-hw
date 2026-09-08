@@ -68,10 +68,14 @@ perfectly priceable order; the bound exists for the exactness of the products,
 not to cap what a customer may spend.
 
 Checking a line alone is not enough — two individually safe lines can sum past
-the range — but the two obvious repairs are both worse than throwing. Capping
-line by line makes the priced total depend on the order of `order.items`
-(`[1e9, 1]` prices at 1e9, `[1, 1e9]` at 1), which contradicts the engine's own
-promise that the same cart always costs the same. Zeroing the whole base is
+the range — but the two obvious repairs are both worse than throwing. Neither
+per-line variant survives, and for different reasons. Taking lines while the
+running sum stays under the bound makes the priced total depend on the order of
+`order.items` — `[1e9, 1]` prices at 1e9 and `[1, 1e9]` at 1 — contradicting the
+engine's own promise that the same cart always costs the same. Clamping each
+line to the bound instead is order-independent (both orders give 1e9 + 1), but
+it silently rewrites a line of 2e9 as 1e9: the goods leave at half price and
+nothing in the breakdown says so. Zeroing the whole base is
 order-independent but fails open: the customer walks away with the goods for the
 price of shipping. A `RangeError` on the *sum* is the only outcome that is both
 order-independent and closed on money. It narrows "never throws on order data"
@@ -175,6 +179,10 @@ test asserting a reason flaky.
 - **"100% off" promotions still charge one kopeck** on digital orders. Marketing
   must not promise "completely free". The alternative — allowing a zero total —
   produces orders that no payment provider will authorise.
-- **Per-category rounding can favour the customer by up to ~1.5 kopecks** per
-  order versus rounding the subtotal once. Accepted: bounded, deterministic, and
-  it buys a rule that does not depend on cart shape.
+- **Per-category rounding can favour the customer by at most 1 kopeck** per
+  order versus rounding the subtotal once — checked exhaustively for every
+  percentage 0-100: three half-up roundings can exceed a single rounding of
+  their sum by one kopeck and never by more, because three fractions that each
+  round up sum to at least 1.5, which the single rounding then rounds up too.
+  Accepted: bounded, deterministic, and it buys a rule that does not depend on
+  cart shape.
