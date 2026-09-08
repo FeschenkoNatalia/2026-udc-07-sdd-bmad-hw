@@ -117,6 +117,11 @@ Added after the spec was frozen, from the Task E spec reviewer and the PR review
       omitting `options` stays legal. `for...of` accepts any iterable, so without
       the array check `items: "x"` prices as an empty, free cart, and without the
       object check `options: "x"` silently falls back to the wall clock (AC-23).
+- [ ] 8.12 Raise on a line whose own product overflows to `Infinity` instead of
+      neutralising it: `Number.isInteger` rejects `Infinity`, so the line would
+      contribute 0 and its goods would ship free, while a merely large line of
+      2e9 raises through the subtotal check — the cart would get cheaper as it
+      got bigger (AC-26).
 - [ ] 8.10 Require `unitPriceKopecks` and `quantity` to each be a non-negative
       integer in its own right, not merely their product: `50.5 * 2` and
       `-100 * -1` both yield clean non-negative integers, yet half a kopeck is

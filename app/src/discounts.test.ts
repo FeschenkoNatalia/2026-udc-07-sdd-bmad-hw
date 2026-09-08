@@ -482,6 +482,15 @@ describe("priceOrder", () => {
     expect(() => price(order({ items: unsafeSum }))).toThrow(RangeError);
     expect(() => price(order({ items: [...unsafeSum].reverse() }))).toThrow(RangeError);
 
+    // Переповнення до Infinity — теж перевищення межі, а не зіпсутий рядок:
+    // `Number.isInteger(Infinity)` хибне, тож без окремого правила рядок вніс би
+    // 0 і товар поїхав би безкоштовно, тоді як удесятеро менший рядок на 2·10⁹
+    // падає. Кошик дешевшав би від того, що більшає.
+    const overflow = item({ unitPriceKopecks: Number.MAX_VALUE, quantity: 2 });
+    expect(Number.isFinite(Number.MAX_VALUE * 2)).toBe(false);
+    expect(() => price(order({ items: [overflow] }))).toThrow(RangeError);
+    expect(() => price(order({ items: [item(), overflow] }))).toThrow(RangeError);
+
     // Рівно межа — валідне замовлення, рахується точно.
     const atBound = price(order({ items: [item({ unitPriceKopecks: MAX_MONEY_KOPECKS })] }));
     expect(atBound.subtotalKopecks).toBe(MAX_MONEY_KOPECKS);

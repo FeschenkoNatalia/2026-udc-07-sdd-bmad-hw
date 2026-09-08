@@ -209,6 +209,15 @@ export function priceOrder(
       continue;
     }
     const lineTotal = lineTotalKopecks(line);
+    // An overflow is a magnitude failure, not corrupt data. `Number.isInteger`
+    // rejects `Infinity`, so without this the line would quietly contribute 0 and
+    // its goods would ship free — while a merely large line of 2e9 raises via the
+    // subtotal check. The cart would get cheaper as it got bigger (D-24).
+    if (!Number.isFinite(lineTotal)) {
+      throw new RangeError(
+        `priceOrder: line total overflows; goods cannot exceed MAX_MONEY_KOPECKS (${MAX_MONEY_KOPECKS})`,
+      );
+    }
     if (Number.isInteger(lineTotal) && lineTotal >= 0 && CATEGORIES.includes(line.category)) {
       remaining[line.category] += lineTotal;
       categoriesPresent.add(line.category);

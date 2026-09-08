@@ -1,3 +1,5 @@
+# Proposal: add-discount-engine
+
 ## Why
 
 The repo ships loyalty tiers that are never applied to a price, and no coupon

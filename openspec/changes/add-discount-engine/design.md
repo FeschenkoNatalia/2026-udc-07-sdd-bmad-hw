@@ -1,3 +1,5 @@
+# Design: add-discount-engine
+
 ## Context
 
 `app/` is a dependency-free TypeScript domain library. `pricing.ts` already
@@ -62,7 +64,10 @@ into the base and stopped by the check on the sum, which raises, rather than bei
 refused as an out-of-range field the way an oversized coupon value is refused as
 `invalid_coupon` (AC-26). The number is picked from the arithmetic rather than the
 business: `base * pct <= 1e9 * 100 = 1e11 < 2^53`, so no intermediate product can
-lose precision and the rounding rule above stays exact everywhere.
+lose precision and the rounding rule above stays exact everywhere. A line whose
+own product overflows to `Infinity` raises as well: `Number.isInteger` rejects it,
+so treating it as corrupt data would ship those goods free while a merely large
+line of 2e9 raises — the cart would get cheaper as it got bigger.
 
 The bound deliberately stops there. `shippingKopecks` is seeded behaviour this
 change does not touch, so `totalKopecks` can exceed the bound by the shipping fee
@@ -86,13 +91,18 @@ order-independent and closed on money. It narrows "never throws on order data"
 exactly as far as the broken-clock rule already narrowed it — and no further: a
 single malformed line still contributes 0 rather than being fatal.
 
-**A fixed coupon consumes categories in declared order.** Its own amount is
-unaffected by the order; only a later category-scoped coupon can observe the
-difference. An arbitrary-but-fixed rule is predictable; a proportional split
+**An _unscoped_ fixed coupon consumes categories in declared order.** A fixed
+coupon that carries a `category` is not spread at all: the whole amount comes off
+that category's remainder, clamped to it. For the unscoped case the coupon's own
+amount is unaffected by the order; only a later category-scoped coupon can
+observe the difference. An arbitrary-but-fixed rule is predictable; a proportional split
 would need another rounding decision.
 
 **The minimum charge is a separate breakdown field, not a shrunken discount.**
-When an order with goods value reaches zero, adding
+It applies only where the original `subtotalKopecks` was above zero *and* the
+whole total, shipping included, comes out at exactly zero — so a physical order
+keeps its shipping total untouched and is never topped up by a kopeck; in
+practice only a fully discounted digital order reaches it. There, adding
 `minimumChargeAdjustmentKopecks = 1` keeps `appliedCoupons` truthful about what
 each code actually gave. Trimming the last coupon by a kopeck instead would make
 the reported discount a lie, and would need a further rule for the case where
@@ -136,9 +146,10 @@ here; a fractional percentage would reintroduce floats.
 The two union-typed fields are validated for the same reason, because TypeScript
 unions are erased exactly like `number` is: a `kind` outside `percent | fixed`
 otherwise falls through to the fixed branch and pays its `value` out in kopecks,
-and a `category` outside the declared three is reported as `category_absent` —
-a statement about the cart, for a defect in the coupon. Both are decided before
-the `category_absent` check so the reason always names what is actually wrong.
+and a `category` outside the declared three would be reported as
+`category_absent` — a statement about the cart, for a defect in the coupon. Both
+are therefore `invalid_coupon`, decided before the `category_absent` check so the
+reason always names what is actually wrong.
 
 The same reasoning covers the shapes, not just the values. `priceOrder` takes
 three externally-shaped inputs — `order.items`, `catalogue` and `order.coupons` —
