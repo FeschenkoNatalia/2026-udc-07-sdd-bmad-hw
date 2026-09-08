@@ -22,13 +22,18 @@
 ## 3. Coupon eligibility
 
 - [ ] 3.1 Normalise entered codes with `trim()` + `toUpperCase()` and resolve
-      them against the catalogue, first match wins (AC-13).
+      them against the catalogue, first match wins, skipping any candidate that
+      is not an object with a string `code` (AC-13, AC-22, AC-28).
 - [ ] 3.2 Implement the rejection checks in the fixed precedence order:
       `unknown_code`, `duplicate_code`, `invalid_coupon`, `expired`,
       `min_subtotal_not_met`, `category_absent` (AC-11, AC-12, AC-14, AC-19).
+      The seventh reason, `no_remaining_amount`, is decided at application time
+      in 4.3 — it is the tail of the same order, not a separate check here.
 - [ ] 3.3 Compare expiry against `options.now` (default `new Date()`), treating
       the `expiresAt` instant itself as expired and an unparseable date as
-      `invalid_coupon` (AC-5, AC-6).
+      `invalid_coupon` (AC-5, AC-6). Raise a `RangeError` on an Invalid Date
+      `now` before pricing anything, so a broken clock cannot silently revive
+      every expired coupon through comparisons against `NaN` (AC-23).
 - [ ] 3.4 Test `minSubtotalKopecks` inclusively against the pre-discount goods
       subtotal (AC-7).
 
@@ -54,7 +59,7 @@
 - [ ] 6.1 Create `app/src/discounts.test.ts` with fixtures for orders, items and
       the coupon catalogue, and a fixed `now` of 2026-09-06T10:00:00.000Z.
 - [ ] 6.2 Write one test per criterion, titled `AC-N: <short description>`, for
-      AC-1 through AC-19 and AC-21.
+      AC-1 through AC-19 and AC-21 through AC-28.
 - [ ] 6.3 Add AC-20 as a reconciliation check asserting
       `total = subtotal - tier - coupons + shipping + minimumChargeAdjustment`
       and `couponDiscount = sum(appliedCoupons)` across every fixture.
@@ -84,3 +89,17 @@ Added after the spec was frozen, from the Task E spec reviewer and the PR review
       zeroed so the goods are never given away (AC-26).
 - [ ] 8.4 Seed the AC-20 fixture list at module scope so the reconciliation test
       passes when run alone.
+- [ ] 8.5 Validate the union-typed coupon fields as data: `kind` exactly
+      `percent` or `fixed`, `category` — when present — one of the declared
+      three, both `invalid_coupon` otherwise and both decided before
+      `category_absent` (AC-27).
+- [ ] 8.6 Make malformed shapes non-fatal across all three externally-shaped
+      inputs: skip an order line that is not an object before calling
+      `lineTotalKopecks`, skip a catalogue candidate that is not an object with a
+      string `code`, report a non-string entry of `order.coupons` as
+      `unknown_code` under an empty code, and mark a category present only where
+      a line actually contributed, so a corrupt-only category reads
+      `category_absent` (AC-28).
+- [ ] 8.7 Scope `MAX_MONEY_KOPECKS` explicitly to the goods base and the coupon
+      money fields, leaving undiscounted shipping outside it, so `totalKopecks`
+      above the bound is documented rather than contradictory (AC-26).

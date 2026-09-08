@@ -72,6 +72,10 @@ const CATALOGUE: Coupon[] = [
   // D-12: явний зсув, не тільки `Z`, і регістр за RFC 3339 — для AC-24.
   coupon("OFFSET02", "percent", 10, { expiresAt: "2026-10-01T00:00:00+02:00" }),
   coupon("LOWERZ", "percent", 10, { expiresAt: "2026-10-01t00:00:00z" }),
+  // D-16: enum-поля поза юніоном — для AC-27. `KINDBAD` без правила пішов би в
+  // гілку fixed і роздав би 50 000 копійок.
+  coupon("KINDBAD", "percentt" as never, 50_000),
+  coupon("CATBAD", "percent", 10, { category: "STANDARD" as never }),
 ];
 
 const price = (o: Order, now: Date = NOW) => priceOrder(o, CATALOGUE, { now });
@@ -395,6 +399,64 @@ describe("priceOrder", () => {
     }));
     expect(corruptCategory.subtotalKopecks).toBe(100_000);
     expect(corruptCategory.totalKopecks).toBe(104_900);
+  });
+
+  it("AC-27: невідомі kind і category купона — invalid_coupon, а не знижка", () => {
+    const result = price(track(order({ coupons: ["KINDBAD", "CATBAD"] })));
+    expect(result.couponDiscountKopecks).toBe(0);
+    expect(result.totalKopecks).toBe(104_900);
+    expect(result.rejectedCoupons).toEqual([
+      { code: "KINDBAD", reason: "invalid_coupon" },
+      { code: "CATBAD", reason: "invalid_coupon" },
+    ]);
+    // Без перевірки `kind` купон пішов би в гілку fixed і дав би 50 000; без
+    // перевірки `category` він отримав би `category_absent` — причину, яка
+    // говорить про кошик, хоча зіпсутий тут купон.
+  });
+
+  it("AC-28: зіпсутий рядок і зіпсутий запис каталогу не зупиняють розрахунок", () => {
+    // Рядок, якого взагалі немає: `lineTotalKopecks(null)` кинув би TypeError.
+    const withNullLine = price(
+      track(order({ items: [item(), null as never], coupons: ["SAVE10"] })),
+    );
+    expect(withNullLine.subtotalKopecks).toBe(100_000);
+    expect(withNullLine.couponDiscountKopecks).toBe(10_000);
+    expect(withNullLine.totalKopecks).toBe(94_900);
+
+    // Категорію позначає лише придатний рядок: єдиний fresh-рядок зіпсутий, тож
+    // fresh-купон — `category_absent`, а не `no_remaining_amount` (D-19, D-22).
+    const corruptFresh = price(
+      track(
+        order({
+          items: [item(), item({ sku: "BB-1", category: "fresh", quantity: -1 })],
+          coupons: ["FRESH10"],
+        }),
+      ),
+    );
+    expect(corruptFresh.rejectedCoupons).toEqual([
+      { code: "FRESH10", reason: "category_absent" },
+    ]);
+
+    // Зіпсутий запис каталогу пропускається пошуком, а не валить весь виклик.
+    const brokenCatalogue = [
+      null as never,
+      { code: null } as never,
+      ...CATALOGUE,
+    ];
+    const result = priceOrder(order({ coupons: ["SAVE10", "NOSUCH"] }), brokenCatalogue, {
+      now: NOW,
+    });
+    expect(result.appliedCoupons).toEqual([{ code: "SAVE10", discountKopecks: 10_000 }]);
+    expect(result.rejectedCoupons).toEqual([{ code: "NOSUCH", reason: "unknown_code" }]);
+    expect(result.totalKopecks).toBe(94_900);
+
+    // Третій зовнішній вхід: код, який не є рядком. `normalizeCode` кинув би на
+    // `.trim()`; замість цього — `unknown_code` з порожнім кодом, і сусідній
+    // валідний код усе одно обробляється (D-11).
+    const badCode = price(track(order({ coupons: [null as never, "SAVE10"] })));
+    expect(badCode.rejectedCoupons).toEqual([{ code: "", reason: "unknown_code" }]);
+    expect(badCode.appliedCoupons).toEqual([{ code: "SAVE10", discountKopecks: 10_000 }]);
+    expect(badCode.totalKopecks).toBe(94_900);
   });
 
   // AC-20 стоїть останнім навмисно, поза числовим порядком: він проходить по

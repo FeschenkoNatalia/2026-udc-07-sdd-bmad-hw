@@ -74,8 +74,10 @@ discarded rather than carried anywhere.
 ### Requirement: Category-scoped coupons
 
 A coupon carrying a `category` SHALL be computed on that category's remaining
-amount only, never on the whole order. If the order contains no line of that
-category, the coupon MUST be rejected with reason `category_absent`.
+amount only, never on the whole order. If the order contains no *contributing*
+line of that category, the coupon MUST be rejected with reason `category_absent`
+— a line neutralised as malformed does not make its category present, so the
+reason describes the cart rather than the state of the engine.
 
 #### Scenario: AC-8 — a category percentage uses the category base
 
@@ -101,14 +103,24 @@ as typed. A code absent from the catalogue MUST be reported as `unknown_code` on
 every occurrence; `duplicate_code` applies only after the code has been found in
 the catalogue, so a repeated *known* code is a duplicate regardless of whether
 the earlier occurrence was applied or itself rejected. Codes are matched
-case-insensitively after trimming surrounding whitespace. A coupon is invalid at
+case-insensitively after trimming surrounding whitespace. The catalogue arrives
+from outside the engine, so a candidate that is not an object carrying a string
+`code` MUST be skipped by the lookup rather than raising, and an entry of
+`order.coupons` that is not a string MUST be reported as `unknown_code` under an
+empty code — it can name nothing in the catalogue, and stringifying it would show
+the customer a code they never typed. A coupon is invalid at
 and after its `expiresAt` instant, compared against an injectable `now`;
 `expiresAt` MUST be an ISO-8601 date-time carrying an explicit offset (`Z` or
 `±HH:MM`), and anything else — including a date without a time — MUST be
 rejected as `invalid_coupon`, so the outcome cannot depend on the host time
 zone. Every money-valued coupon field — a fixed `value` and a
 `minSubtotalKopecks` when present — MUST be a non-negative integer no greater
-than `MAX_MONEY_KOPECKS`, or the coupon is `invalid_coupon`. A
+than `MAX_MONEY_KOPECKS`, or the coupon is `invalid_coupon`. The two union-typed
+fields are validated as data as well: `kind` MUST be exactly `percent` or
+`fixed`, and a `category`, when present, MUST be one of `standard`, `fresh`,
+`digital`; either outside its union is `invalid_coupon`, decided before
+`category_absent` so a malformed coupon is never reported as a fact about the
+cart. A
 `minSubtotalKopecks` threshold MUST be tested inclusively against the original
 goods subtotal, before any discount. When more
 than one rejection reason applies, the first of this order MUST be reported:
@@ -180,6 +192,15 @@ than one rejection reason applies, the first of this order MUST be reported:
   three are rejected with reason `invalid_coupon` — an unchecked NaN threshold
   compares false and would let a "spend 1000 UAH" code apply to a 10 UAH basket
 
+#### Scenario: AC-27 — a coupon outside its own unions is malformed, not applied
+
+- **WHEN** an order of 100000 enters `KINDBAD` (`kind` `percentt`, value 50000)
+  and `CATBAD` (percent 10, `category` `STANDARD`)
+- **THEN** neither applies, the coupon discount is 0, the total stays 104900, and
+  both are rejected with reason `invalid_coupon` — an unchecked `kind` falls
+  through to the fixed branch and pays out 50000 kopecks, and an unchecked
+  `category` reports `category_absent`, blaming the cart for a broken coupon
+
 #### Scenario: AC-23 — a broken clock fails loudly
 
 - **WHEN** `priceOrder` is called with `options.now` set to an Invalid Date on an
@@ -243,11 +264,15 @@ order with no items MUST remain at a total of zero.
 
 ### Requirement: Malformed order lines are neutralised
 
-The engine SHALL NOT reject an order line by line. A line whose
-`lineTotalKopecks` is not a non-negative integer, or whose `category` falls
-outside the declared union, MUST contribute 0 to the discount base, so that no
-category remainder can start below zero and the reported subtotal always equals
-the sum of the category remainders. The reported `subtotalKopecks` is therefore
+The engine SHALL NOT reject an order line by line. A line that is not an object,
+a line whose `lineTotalKopecks` is not a non-negative integer, or one whose
+`category` falls outside the declared union, MUST contribute 0 to the discount
+base, so that no category remainder can start below zero and the reported
+subtotal always equals the sum of the category remainders. The shape check MUST
+precede reading the line, since `lineTotalKopecks` raises on a non-object. A
+category counts as present, for the purpose of `category_absent`, only where at
+least one line contributed to it: a cart whose only `fresh` line is corrupt holds
+no fresh goods. The reported `subtotalKopecks` is therefore
 the sum of the contributing lines, which equals `subtotalKopecks(order)` for any
 well-formed order.
 
@@ -256,7 +281,10 @@ that does MUST raise a `RangeError` rather than be priced. The check is on the
 sum, never line by line: capping lines would make the priced total depend on the
 order of `order.items`, and zeroing an oversized line would hand the goods over
 for the price of shipping. The bound is chosen so every intermediate product
-stays exact: `base * pct <= 1e9 * 100 = 1e11 < 2^53`.
+stays exact: `base * pct <= 1e9 * 100 = 1e11 < 2^53`. It covers the goods base
+and the money-valued coupon fields, not `shippingKopecks`, which is seeded
+behaviour left untouched; `totalKopecks` may therefore reach
+`MAX_MONEY_KOPECKS` plus shipping.
 
 #### Scenario: AC-21 — a corrupt line contributes nothing
 
@@ -283,6 +311,25 @@ stays exact: `base * pct <= 1e9 * 100 = 1e11 < 2^53`.
 - **THEN** it contributes 0 and no exception is raised: `subtotalKopecks` is
   100000 and the total is 104900
 
+#### Scenario: AC-28 — a malformed line or catalogue entry is skipped, not fatal
+
+- **WHEN** `order.items` holds `null` beside a `standard` line of 100000 and
+  `SAVE10` is entered
+- **THEN** no exception is raised, `subtotalKopecks` is 100000, the coupon
+  discount is 10000 and the total is 94900
+- **WHEN** the only `fresh` line is corrupt (`quantity: -1`) and `FRESH10` is
+  entered
+- **THEN** the reason is `category_absent`, not `no_remaining_amount`: a line
+  that contributed nothing does not make its category present
+- **WHEN** the catalogue begins with `null` and an entry whose `code` is `null`,
+  and `SAVE10` and `NOSUCH` are entered
+- **THEN** both malformed entries are skipped by the lookup, `SAVE10` applies for
+  10000, `NOSUCH` is `unknown_code`, and the total is 94900
+- **WHEN** `order.coupons` is `[null, "SAVE10"]`
+- **THEN** the first entry is `unknown_code` under an empty code, `SAVE10` still
+  applies for 10000, the total is 94900, and every entry is still accounted for
+  exactly once
+
 ### Requirement: The breakdown reconciles exactly
 
 Every returned breakdown MUST satisfy
@@ -291,7 +338,7 @@ and `couponDiscount` MUST equal the sum of `appliedCoupons[i].discountKopecks`.
 `minimumChargeAdjustmentKopecks` MUST be 0 or 1, and 1 only where the total would
 otherwise be exactly zero. `subtotalKopecks` MUST stay within
 `[0, MAX_MONEY_KOPECKS]` on any input, which is what keeps every intermediate
-product exact.
+product exact; `totalKopecks` adds undiscounted shipping on top of it.
 
 #### Scenario: AC-20 — the arithmetic is auditable on any input
 

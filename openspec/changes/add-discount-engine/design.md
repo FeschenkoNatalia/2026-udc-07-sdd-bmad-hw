@@ -53,11 +53,19 @@ consequence is that the tier discount can differ by one kopeck from rounding the
 whole subtotal at once — pinned by scenario AC-9 so it can never be "fixed" by
 accident.
 
-**One money bound, checked on the sum, enforced by throwing.** Every money value
-— a line total, a fixed coupon `value`, a `minSubtotalKopecks` — is bounded by
-`MAX_MONEY_KOPECKS` (1e9 kopecks, 10M UAH), picked from the arithmetic rather
-than the business: `base * pct <= 1e9 * 100 = 1e11 < 2^53`, so no intermediate
-product can lose precision and the rounding rule above stays exact everywhere.
+**One money bound, checked on the sum, enforced by throwing.** The goods base and
+every money-valued coupon field — a line total, a fixed coupon `value`, a
+`minSubtotalKopecks` — are bounded by `MAX_MONEY_KOPECKS` (1e9 kopecks, 10M UAH),
+picked from the arithmetic rather than the business:
+`base * pct <= 1e9 * 100 = 1e11 < 2^53`, so no intermediate product can lose
+precision and the rounding rule above stays exact everywhere.
+
+The bound deliberately stops there. `shippingKopecks` is seeded behaviour this
+change does not touch, so `totalKopecks` can exceed the bound by the shipping fee
+— scenario AC-26 prices 1000000000 goods at a total of 1000004900. Extending the
+bound to the total would mean either trimming a legitimate cheque or raising on a
+perfectly priceable order; the bound exists for the exactness of the products,
+not to cap what a customer may spend.
 
 Checking a line alone is not enough — two individually safe lines can sum past
 the range — but the two obvious repairs are both worse than throwing. Capping
@@ -90,6 +98,14 @@ negative line total would start a category remainder below zero, leave
 money to a crafted cart. Clamping at the line rather than the category stops one
 corrupt line from eating a sound neighbour.
 
+The shape of the line is checked before the line is read: `lineTotalKopecks`
+dereferences its argument, so a `null` entry would throw and break the very
+promise this decision makes. And a line that contributed nothing does not make
+its category present — otherwise a cart whose only `fresh` line is corrupt would
+report a fresh coupon as `no_remaining_amount` ("that category is already
+discounted") when the truth is `category_absent` ("there are no such goods"), and
+the distinction those two reasons exist for would be lost.
+
 **Time is an injected parameter, and a broken one is fatal.** `options.now`
 defaults to `new Date()` but is always passed by tests; an Invalid Date throws,
 because every comparison against `NaN` is false and the silent outcome would be
@@ -100,6 +116,23 @@ the clock twice can price the same order two ways.
 a negative amount or an unparseable date makes the coupon `invalid_coupon`. A
 negative discount would raise the bill, which is the most expensive failure mode
 here; a fractional percentage would reintroduce floats.
+
+The two union-typed fields are validated for the same reason, because TypeScript
+unions are erased exactly like `number` is: a `kind` outside `percent | fixed`
+otherwise falls through to the fixed branch and pays its `value` out in kopecks,
+and a `category` outside the declared three is reported as `category_absent` —
+a statement about the cart, for a defect in the coupon. Both are decided before
+the `category_absent` check so the reason always names what is actually wrong.
+
+The same reasoning covers the shapes, not just the values. `priceOrder` takes
+three externally-shaped inputs — `order.items`, `catalogue` and `order.coupons` —
+and each is `T[]` only in the type. The lookup skips any catalogue candidate that
+is not an object carrying a string `code`; a coupon entry that is not a string is
+`unknown_code` under an empty code, since it can name nothing and stringifying it
+would show the customer a code they never typed. Raising on any of the three
+would let one malformed row in a marketing feed, or one bad entry in a cart, take
+down pricing for every order — the failure the no-throw rule exists to prevent,
+arriving one level up from the field it was written for.
 
 **Rejection reasons are ordered.** Without a fixed precedence two correct
 implementations agree on the money and disagree on the reason, which makes any

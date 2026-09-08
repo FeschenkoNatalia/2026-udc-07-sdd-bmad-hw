@@ -11,8 +11,10 @@ import { lineTotalKopecks, shippingKopecks, tierPercent } from "./pricing.js";
 export const MINIMUM_CHARGE_KOPECKS = 1;
 
 /**
- * Shared upper bound for every money value — 10 млн грн (D-24). Chosen so that
- * every intermediate product stays exact: base * pct <= 1e9 * 100 = 1e11 < 2^53.
+ * Upper bound for the goods base and for every coupon money field — 10 млн грн
+ * (D-24). Chosen so that every intermediate product stays exact:
+ * base * pct <= 1e9 * 100 = 1e11 < 2^53. Shipping is seeded behaviour that sits
+ * outside the bound, so `totalKopecks` may reach MAX_MONEY_KOPECKS + shipping.
  */
 export const MAX_MONEY_KOPECKS = 1_000_000_000;
 
@@ -91,6 +93,13 @@ const ISO_WITH_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\
 
 /** Fail closed on coupon data: a bad value must never turn into a discount (D-16, D-12). */
 function isUsable(coupon: Coupon): boolean {
+  // The union types are erased at runtime. A `kind` outside them would fall
+  // through to the fixed branch and pay its `value` out in kopecks, and a
+  // `category` outside them would be compared against a set that can never hold
+  // it — `category_absent` for a coupon that is simply malformed (D-16).
+  const kindOk = coupon.kind === "percent" || coupon.kind === "fixed";
+  const categoryOk =
+    coupon.category === undefined || CATEGORIES.includes(coupon.category);
   const valueOk =
     coupon.kind === "percent"
       ? Number.isInteger(coupon.value) && coupon.value >= 0 && coupon.value <= 100
@@ -101,7 +110,7 @@ function isUsable(coupon: Coupon): boolean {
     coupon.minSubtotalKopecks === undefined || isMoney(coupon.minSubtotalKopecks);
   const dateOk =
     ISO_WITH_OFFSET.test(coupon.expiresAt) && !Number.isNaN(Date.parse(coupon.expiresAt));
-  return valueOk && thresholdOk && dateOk;
+  return kindOk && categoryOk && valueOk && thresholdOk && dateOk;
 }
 
 function noRemainders(): Remainders {
@@ -112,11 +121,13 @@ function noRemainders(): Remainders {
  * Prices an order: loyalty tier first, then every eligible coupon, cascading, in
  * the order the customer typed them. Pure — no I/O, no clock outside
  * `options.now`, and neither `order` nor `catalogue` is mutated. Coupon data never
- * throws — an unusable coupon comes back in `rejectedCoupons` — and neither does a
- * single malformed order line, which simply contributes 0 (D-22). Exactly two
- * inputs throw instead of pricing: an invalid `options.now`, which is a caller bug
- * rather than customer data (D-23), and a goods subtotal above
- * `MAX_MONEY_KOPECKS`, which cannot be priced exactly (D-24).
+ * throws — an unusable coupon comes back in `rejectedCoupons`, a malformed
+ * catalogue entry is skipped by the lookup, and a code that is not a string is
+ * `unknown_code` — and neither does a single malformed order line, which simply
+ * contributes 0 (D-22). Exactly two inputs throw instead
+ * of pricing: an invalid `options.now`, which is a caller bug rather than customer
+ * data (D-23), and a goods subtotal above `MAX_MONEY_KOPECKS`, which cannot be
+ * priced exactly (D-24).
  */
 export function priceOrder(
   order: Order,
@@ -130,15 +141,22 @@ export function priceOrder(
     throw new RangeError("priceOrder: options.now is an Invalid Date");
   }
 
-  // Step 0 — base. A malformed line contributes nothing (D-22): not an integer,
-  // negative, or carrying a category outside the declared union — the type
-  // guarantees neither at runtime, and an unknown key would leave `subtotal` and
-  // the category remainders disagreeing.
+  // Step 0 — base. A malformed line contributes nothing (D-22): not an object,
+  // not an integer, negative, or carrying a category outside the declared union
+  // — the type guarantees none of it at runtime, and an unknown key would leave
+  // `subtotal` and the category remainders disagreeing. The shape check comes
+  // first: `lineTotalKopecks(null)` throws, and D-22 promises it never does.
+  // Only a contributing line marks its category present, so a category coupon
+  // over a cart whose only `fresh` line is corrupt is `category_absent` — there
+  // are no such goods — rather than `no_remaining_amount` (D-19, D-22).
   const remaining = noRemainders();
+  const categoriesPresent = new Set<Category>();
   for (const line of order.items) {
+    if (line === null || typeof line !== "object") continue;
     const lineTotal = lineTotalKopecks(line);
     if (Number.isInteger(lineTotal) && lineTotal >= 0 && CATEGORIES.includes(line.category)) {
       remaining[line.category] += lineTotal;
+      categoriesPresent.add(line.category);
     }
   }
   const subtotal = CATEGORIES.reduce((sum, category) => sum + remaining[category], 0);
@@ -167,16 +185,34 @@ export function priceOrder(
   const appliedCoupons: AppliedCoupon[] = [];
   const rejectedCoupons: RejectedCoupon[] = [];
   const seen = new Set<string>();
-  const categoriesPresent = new Set<Category>(order.items.map((line) => line.category));
 
   for (const typed of order.coupons) {
+    // The third externally-shaped input, after `order.items` and `catalogue`:
+    // `string[]` is a type, not a runtime guarantee, and `normalizeCode` calls
+    // `.trim()`. An entry that is not a string cannot name a catalogue coupon,
+    // so it is `unknown_code` — the answer D-11 already gives an empty code —
+    // and it is reported as "" rather than stringified, because putting `null`
+    // into the response would show the customer a code they never typed (D-11).
+    if (typeof typed !== "string") {
+      rejectedCoupons.push({ code: "", reason: "unknown_code" });
+      continue;
+    }
     const code = normalizeCode(typed);
     const reject = (reason: CouponRejectionReason): void => {
       rejectedCoupons.push({ code: typed.trim(), reason });
     };
 
-    // Eligibility, in the fixed precedence order of D-20.
-    const coupon = catalogue.find((candidate) => normalizeCode(candidate.code) === code);
+    // Eligibility, in the fixed precedence order of D-20. The catalogue arrives
+    // from outside: an entry that is not an object with a string `code` is
+    // skipped by the lookup rather than normalised, so one bad row cannot throw
+    // its way out of a price (D-8, D-16).
+    const coupon = catalogue.find(
+      (candidate) =>
+        candidate !== null &&
+        typeof candidate === "object" &&
+        typeof candidate.code === "string" &&
+        normalizeCode(candidate.code) === code,
+    );
     if (coupon === undefined) {
       reject("unknown_code");
       continue;

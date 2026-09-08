@@ -8,7 +8,7 @@ where rounding lands, whether a threshold is checked before or after other
 discounts, or whether a total may reach zero.
 
 `docs/spec/pricing-discounts.md` closes 24 of those forks (D-1…D-24) with a
-recorded reason for each, and pins 26 acceptance criteria with concrete kopeck
+recorded reason for each, and pins 28 acceptance criteria with concrete kopeck
 figures. This change carries that document into OpenSpec as a normative
 capability plus an implementation plan, so the behaviour is reviewable and
 traceable rather than re-decided in code.
@@ -28,9 +28,16 @@ traceable rather than re-decided in code.
   `MINIMUM_CHARGE_KOPECKS = 1`, carried in its own breakdown field. The trigger is
   goods value, not the presence of lines: a cart of zero-priced lines stays at its
   shipping total.
-- A line whose total is not a non-negative integer, or whose category is outside
-  the declared union, contributes 0 to the discount base, so corrupt cart data
-  cannot reduce a bill.
+- A line whose total is not a non-negative integer, whose category is outside the
+  declared union, or which is not an object at all, contributes 0 to the discount
+  base, so corrupt cart data cannot reduce a bill — and a category counts as
+  present only where a line actually contributed to it.
+- Every coupon field is validated as runtime data, the two union-typed ones
+  (`kind`, `category`) included. All three externally-shaped inputs are hardened:
+  a malformed catalogue entry is skipped by the lookup and a non-string coupon
+  entry is `unknown_code`, rather than either raising.
+- `MAX_MONEY_KOPECKS` bounds the goods base and the coupon money fields, not
+  undiscounted shipping, so `totalKopecks` may exceed it by the shipping fee.
 - A goods subtotal above `MAX_MONEY_KOPECKS` raises instead of being priced:
   capping lines would make the total depend on their order, and zeroing them
   would give the goods away for the price of shipping.
